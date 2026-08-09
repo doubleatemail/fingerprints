@@ -45,6 +45,8 @@ DONDE = {
     "daeseal.js":    "/assets/js/daeseal.js",
     "daecrypto.js":  "/assets/js/daecrypto.js",
     "daemime.js":    "/assets/js/daemime.js",
+    "daemimebuild.js": "/assets/js/daemimebuild.js",
+    "daecompose.js": "/assets/js/daecompose.js",
     "selfread.js":   "/assets/js/selfread.js",
     "webmail.js":    "/assets/js/webmail.js",
     "dae_open.py":   "/assets/tools/dae_open.py",
