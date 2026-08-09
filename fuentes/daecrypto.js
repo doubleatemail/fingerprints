@@ -26,6 +26,8 @@
 window.daeCrypto = (function () {
     'use strict';
 
+    var objFirma = null;   // la misma clave, para firmar
+
     var objClave = null;      // CryptoKey en memoria, nada mas
     var szQuien  = '';
 
@@ -105,12 +107,47 @@ window.daeCrypto = (function () {
             { name: 'RSA-OAEP', hash: 'SHA-1' },
             false, ['decrypt']);
 
+        // La MISMA clave, importada otra vez para firmar. WebCrypto no
+        // deja usar una clave de descifrar para firmar, y hace bien:
+        // separar para que sirve cada clave evita ataques donde se hace
+        // firmar algo a quien creia estar descifrando.
+        //
+        // PKCS#1 v1.5 con SHA-256, que es lo que hace openssl_sign en el
+        // servidor. Si no coincidiera, el destinatario veria "firma no
+        // valida" en un correo perfectamente legitimo, que asusta mas
+        // que no firmarlo.
+        try {
+            objFirma = await crypto.subtle.importKey(
+                'pkcs8', arrPkcs8,
+                { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+                false, ['sign']);
+        } catch (e) {
+            // Que no se pueda firmar no impide leer, que es a lo que se
+            // vino. Se sigue sin firma y ya esta.
+            objFirma = null;
+        }
+
         szQuien = objSobre.szEmail || '';
         return szQuien;
     }
 
     /** Olvida la clave. Se llama al salir. */
-    function olvidar() { objClave = null; szQuien = ''; }
+    function olvidar() { objClave = null; objFirma = null; szQuien = ''; }
+
+    /** True si la clave cargada puede ademas firmar. */
+    function puedeFirmar() { return objFirma !== null; }
+
+    /**
+     * Firma unos bytes con la clave cargada.
+     *
+     * Devuelve la firma en crudo. Quien llama monta el sobre, porque el
+     * formato del sobre es cosa del protocolo y no de la criptografia.
+     */
+    async function firmar(arrDatos) {
+        if (!objFirma) { throw new Error('sin_clave_de_firma'); }
+        return new Uint8Array(await crypto.subtle.sign(
+            { name: 'RSASSA-PKCS1-v1_5' }, objFirma, arrDatos));
+    }
 
     /**
      * Junta las dos piezas y devuelve el MIME en claro.
@@ -205,7 +242,9 @@ window.daeCrypto = (function () {
     }
 
     return {
-        cargar:   cargar,
+        cargar:      cargar,
+        firmar:      firmar,
+        puedeFirmar: puedeFirmar,
         abrir:    abrir,
         lista:    lista,
         duenyo:   duenyo,

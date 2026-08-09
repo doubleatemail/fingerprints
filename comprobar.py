@@ -34,6 +34,7 @@ falsificar no es un fichero, es un pasado.
 """
 
 import hashlib
+import secrets
 import sys
 import urllib.error
 import urllib.request
@@ -67,10 +68,11 @@ def huellas_locales():
 
 
 def bajar(ruta):
-    # Un parametro distinto en cada peticion para que ninguna cache
-    # intermedia nos devuelva algo viejo: se comprueba lo que se sirve
-    # AHORA, no lo que se sirvio hace cuatro horas.
-    url = "%s%s?comprobar=1" % (SERVIDOR, ruta)
+    # Un parametro DISTINTO EN CADA EJECUCION. Con uno fijo la cache de
+    # delante guarda esa direccion igual que cualquier otra y devuelve una
+    # copia vieja: la comprobacion daria fallo donde no lo hay, y el aviso
+    # se aprenderia a ignorar, que es justo lo que no puede pasar aqui.
+    url = "%s%s?c=%s" % (SERVIDOR, ruta, secrets.token_hex(8))
     peticion = urllib.request.Request(
         url, headers={"User-Agent": "comprobar.py (+doubleat.email)",
                       "Cache-Control": "no-cache"})

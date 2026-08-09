@@ -58,6 +58,71 @@
         return zbase32(arr);
     }
 
+    function b64(arr) {
+        var sz = '';
+        for (var i = 0; i < arr.length; i++) { sz += String.fromCharCode(arr[i]); }
+        return window.btoa(sz);
+    }
+
+    function hex(arr) {
+        var sz = '';
+        for (var i = 0; i < arr.length; i++) {
+            sz += ('0' + arr[i].toString(16)).slice(-2);
+        }
+        return sz;
+    }
+
+    /**
+     * Firma el mensaje, si la llave del usuario esta cargada aqui.
+     *
+     * Solo pasa en custodia propia: en custodia gestionada la llave
+     * privada la guarda el servidor y aqui no hay nada con que firmar.
+     *
+     * La firma va DENTRO de lo que luego se cifra. Fuera le diria a quien
+     * intercepte el correo quien lo escribe, que es justo lo que el
+     * protocolo evita.
+     *
+     * El sobre tiene que salir igual que el de clsSign::wrap() o el
+     * destinatario vera "sin firmar" en un correo que si lo va.
+     */
+    async function firmarSiSePuede(arrMime, szYo) {
+        if (!window.daeCrypto || !window.daeCrypto.puedeFirmar
+            || !window.daeCrypto.puedeFirmar()) {
+            return arrMime;
+        }
+
+        // La huella es la de la clave PUBLICA, y de una privada no se
+        // saca en WebCrypto. Se pide al directorio, que es publica por
+        // definicion. Asi no hay que migrar los .daekey ya exportados,
+        // que no la llevan dentro.
+        var szPem = await clavePublicaDe(szYo);
+        var arrDer = deB64Pem(szPem);
+        var szHuella = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', arrDer)));
+
+        var arrFirma = await window.daeCrypto.firmar(arrMime);
+
+        var szCabecera = JSON.stringify({
+            szAlgo:      'RSA-SHA256',
+            szSigner:    szYo.trim().toLowerCase(),
+            szSignerFp:  szHuella,
+            szSignature: b64(arrFirma)
+        });
+
+        var arrSobre = new TextEncoder().encode(
+            'DAE-SIG1\n' + szCabecera + '\n\n');
+        var arrTodo = new Uint8Array(arrSobre.length + arrMime.length);
+        arrTodo.set(arrSobre, 0);
+        arrTodo.set(arrMime, arrSobre.length);
+        return arrTodo;
+    }
+
+    function deB64Pem(szPem) {
+        var sz = window.atob(szPem.replace(/-----[^-]+-----/g, '').replace(/\s+/g, ''));
+        var arr = new Uint8Array(sz.length);
+        for (var i = 0; i < sz.length; i++) { arr[i] = sz.charCodeAt(i); }
+        return arr;
+    }
+
     async function clavePublicaDe(szEmail) {
         var objResp = await fetch('/.well-known/dae/hu/' + await hu(szEmail),
                                   { credentials: 'omit' });
@@ -110,6 +175,8 @@
                 arrFicheros: objFicheros && objFicheros.files
                     ? Array.prototype.slice.call(objFicheros.files) : []
             });
+
+            arrMime = await firmarSiSePuede(arrMime, objCasilla.dataset.yo || '');
 
             decir(objCasilla.dataset.cifrando || '...');
             var objSello = await window.daeSeal.sellar(arrMime, arrPems);
