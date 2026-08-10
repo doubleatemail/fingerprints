@@ -49,6 +49,7 @@ WHERE = {
     "daemime.js":      "/assets/js/daemime.js",
     "daemimebuild.js": "/assets/js/daemimebuild.js",
     "daecompose.js":   "/assets/js/daecompose.js",
+    "daevideo.js":     "/assets/js/daevideo.js",
     "selfread.js":     "/assets/js/selfread.js",
     "webmail.js":      "/assets/js/webmail.js",
     "dae_open.py":     "/assets/tools/dae_open.py",
