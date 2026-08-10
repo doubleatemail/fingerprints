@@ -166,7 +166,7 @@ the way to make your computer fetch a URL of somebody else's choosing.
 Check it before you connect: public domain name, no IP literal, no
 port, no path, no reserved TLD. See dominio_valido() below.
 
-License: public domain. Copy it, change it, publish it.
+License: MIT. Copy it, change it, publish it, sell it.
 """
 
 import argparse

@@ -92,4 +92,10 @@ The specification is at <https://doubleat.email/?page=protocol>.
 
 ---
 
-Public domain. No warranty of any kind.
+MIT licensed. See `LICENSE`.
+
+Why not "public domain": Spanish law, where this is written, does not let
+an author renounce copyright by declaration, so a public-domain notice is
+ambiguous at best and void at worst. Anyone who wanted to build on this
+seriously would have their lawyer stop them. MIT says the same thing —
+take it, change it, sell it, no permission needed — and actually holds.

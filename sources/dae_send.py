@@ -3,7 +3,7 @@
 """
 dae_send.py - Send a puzzle email WITHOUT going through our browser
 
-Public domain. Copy it, read it whole, change it, redistribute it.
+MIT licensed. Copy it, read it whole, change it, redistribute it.
 
 ------------------------------------------------------
 WHAT THIS IS FOR
