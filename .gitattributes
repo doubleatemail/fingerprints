@@ -1,5 +1,6 @@
-# NO tocar los finales de linea. En este repositorio no es una manía:
-# se publican huellas SHA-256 de estos ficheros, y si git convierte LF a
-# CRLF al clonar, los bytes cambian, la huella cambia y quien compruebe
-# ve un fallo donde no lo hay. Peor aun: se acostumbraria a ignorarlo.
+# Do NOT touch line endings. This is not a preference here: this
+# repository publishes SHA-256 fingerprints of these files. If git turned
+# LF into CRLF on checkout the bytes would change, the fingerprint would
+# change, and anyone verifying would see a failure where there is none.
+# Worse: they would learn to ignore the warning.
 * -text

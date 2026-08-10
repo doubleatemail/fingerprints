@@ -1,89 +1,95 @@
-# Huellas de lo que sirve doubleat.email
+# Fingerprints of what doubleat.email serves you
 
-Este repositorio existe para que **no tengas que fiarte de nosotros**.
+This repository exists so that **you do not have to take our word for it**.
 
-## El problema
+## The problem
 
-[doubleat.email](https://doubleat.email) cifra el correo en tu navegador.
-Eso está bien, pero tiene un agujero que conviene decir en voz alta: **el
-programa que cifra te lo manda nuestro servidor** cada vez que abres la
-página. Un servidor comprometido, o presionado por alguien, podría
-mandarte una versión que se guarde una copia de lo que escribes, y no lo
-notarías.
+[doubleat.email](https://doubleat.email) encrypts mail in your browser.
+That is good, but it has a hole worth saying out loud: **the program that
+does the encrypting is sent to you by our server**, every time you open
+the page. A compromised server, or one under pressure from somebody,
+could send you a version that keeps a copy of what you write, and you
+would not notice.
 
-Esto es cierto aquí y es cierto en **cualquier** correo cifrado que
-funcione dentro de un navegador. Quien te venda uno sin contártelo, te lo
-está ocultando.
+This is true here and true of **any** encrypted mail that runs inside a
+browser. Anyone selling you one without telling you this is hiding it
+from you.
 
-La web publica la huella de cada fichero que sirve. Pero esa lista la
-sirve el mismo servidor, así que **no demuestra nada**: quien pueda
-cambiar el programa puede cambiar también la lista.
+The site publishes the fingerprint of every file it serves. But that list
+is served by the same server, so it **proves nothing**: whoever can change
+the program can change the list too.
 
-## Para qué sirve este repositorio
+## What this repository is for
 
-Está en otro sitio, con otro dueño, y con su propio historial de cambios.
-Aquí están:
+It lives somewhere else, owned by someone else, with its own history of
+changes. Here you will find:
 
-- `fuentes/` — el código tal cual se sirve.
-- `huellas.txt` — la huella SHA-256 de cada uno.
-- `comprobar.py` — descarga los ficheros de la web y los compara con éstos.
+- `sources/` — the code exactly as it is served.
+- `hashes.txt` — the SHA-256 fingerprint of each file.
+- `verify.py` — downloads the files from the site and compares them.
 
 ```
-python comprobar.py
+python verify.py
 ```
 
-Si alguien manipulase lo que se sirve sin poder manipular también este
-repositorio, saldría.
+If somebody tampered with what is served without also being able to
+tamper with this repository, it would show.
 
-## Comprobarlo a mano
+## Checking by hand
 
-Guarda el fichero desde tu navegador y saca su huella:
+Save the file from your browser and take its fingerprint:
 
 ```
 sha256sum daeseal.js                      # Linux, Mac
 certutil -hashfile daeseal.js SHA256      # Windows
 ```
 
-Compárala con la de `huellas.txt`.
+Compare it with the one in `hashes.txt`.
 
-## Los límites, que también se dicen
+## The limits, which we state too
 
-**Esto no prueba que el código sea correcto.** Prueba que lo servido es lo
-publicado aquí. Que el código haga lo que dice sólo lo sabes leyéndolo, y
-está escrito para poder leerse.
+**This does not prove the code is correct.** It proves that what is served
+is what is published here. Whether the code does what it says can only be
+learnt by reading it, and it is written to be read.
 
-**Si quien controlase el servidor controlase también este repositorio,
-esta comprobación no valdría.** Mira el historial de commits: lo difícil
-de falsificar no es un fichero, es un pasado.
+**If whoever controlled the server also controlled this repository, the
+check would be worthless.** Look at the commit history: what is hard to
+forge is not a file, it is a past.
 
-**Un fallo no siempre es un ataque.** Lo más probable, con diferencia, es
-que se haya publicado una versión nueva y este repositorio no esté aún al
-día. Mira la fecha del último commit antes de alarmarte.
+**A mismatch is not always an attack.** By far the most likely cause is
+that a new version was published and this repository is not up to date
+yet. Check the date of the last commit before you worry.
 
-## Si no quieres depender del navegador en absoluto
+## If you do not want to depend on the browser at all
 
-Hay dos programas que corren en tu ordenador y no necesitan nuestro
-JavaScript para nada:
+Two programs run on your own computer and need none of our JavaScript:
 
-- `fuentes/dae_open.py` — abre un correo puzzle que hayas recibido.
-- `fuentes/dae_send.py` — cifra y envía uno, con firma y adjuntos.
+- `sources/dae_open.py` — opens a puzzle email you have received.
+- `sources/dae_send.py` — encrypts and sends one, with signature and
+  attachments.
 
-Se leen enteros de una sentada. Están en dominio público: cópialos,
-cámbialos, redistribúyelos.
+Both are short enough to read in one sitting. They are public domain:
+copy them, change them, redistribute them.
 
-Si lo que envías es serio, usa éstos.
+If what you are sending is serious, use these.
 
-## El protocolo
+> **Note on language.** This README and `verify.py` are in English. The
+> comments inside `sources/` are still in Spanish: those files must stay
+> byte-for-byte identical to what the site serves, or the fingerprints
+> stop matching. Translating them changes every hash, so it will be done
+> as one deliberate pass rather than piecemeal.
 
-El correo puzzle (`@@`) parte cada mensaje en dos piezas que no viajan
-juntas: una va por correo y la otra se queda guardada. Y la llave del
-mensaje viaja enmascarada con el resumen del cifrado entero, así que hace
-falta hasta el último byte de las dos piezas para obtenerla. A quien
-intercepte una no le sirve de nada: no le falta potencia de cálculo, le
-faltan datos.
+## The protocol
 
-La especificación está en <https://doubleat.email/?page=protocol>.
+Puzzle email (`@@`) splits every message into two pieces that do not
+travel together: one goes by mail, the other stays stored. And the
+message key travels masked with the digest of the **entire** ciphertext,
+so you need every last byte of both pieces to recover it. Intercepting
+one piece gets you nothing: it is not that you lack computing power, it
+is that you lack data.
+
+The specification is at <https://doubleat.email/?page=protocol>.
 
 ---
 
-Dominio público. Sin garantía de ninguna clase.
+Public domain. No warranty of any kind.
