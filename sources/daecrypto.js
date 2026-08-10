@@ -20,10 +20,11 @@
  *      who is asking nor which message it is about: it cannot know.
  *   4. Puts the two together, decrypts with AES-256-GCM, checks the tag.
  *
- * Solo se abre DAE-3. DAE-1 y DAE-2, con RSA, se borraron el
+ * Solo se abre DAE-4. DAE-1 y DAE-2, con RSA, se borraron el
  * 2026-08-10: no habia un solo correo real en esos formatos, y cargar
  * para siempre con tres caminos de descifrado para nadie era pagar por
- * nada. Ver clsEBlock.php y 06_AT_AT_PROTOCOL.md, seccion 3.ter.
+ * nada. Ver clsEBlock.php y 06_AT_AT_PROTOCOL.md, secciones 3.ter y
+ * 3.quater.
  *
  * The decrypted key lives in memory and only while the tab lasts. It is
  * not saved in localStorage nor in a cookie on purpose: what is not
@@ -38,11 +39,25 @@ window.daeCrypto = (function () {
     var arrMiPub = null;      // nuestra publica, hace falta para la sal
     var szQuien  = '';
 
+    // Sigue diciendo DAE-3 y NO es un despiste: la etiqueta ata la
+    // derivacion al sobre de curva, que en DAE-4 no ha cambiado. Tocarla
+    // dejaria ilegible todo el correo ya enviado a cambio de nada.
     var INFO_KEK  = 'DAE-3-KEK';
     var LEN_PRIV  = 32;
     var LEN_PUB   = 32;
     var LEN_NONCE = 12;
     var LEN_TAG   = 16;
+
+    // El PIN va SIEMPRE. Cuando no hay segundo canal es este, que es
+    // publico y no protege de nada: esta para que haya un solo camino de
+    // descifrado en lugar de dos.
+    var PIN_DEFECTO = '000000';
+
+    // Limites del nPinIter que llega en la cabecera. Es un numero de
+    // fuera: un cero deja el PIN en nada y un absurdo cuelga la pestanya
+    // hasta que la maten.
+    var PIN_ITER_MIN = 1;
+    var PIN_ITER_MAX = 10000000;
 
     /**
      * Envoltura PKCS#8 minima para una privada de curva.
@@ -302,13 +317,52 @@ window.daeCrypto = (function () {
     }
 
     /**
+     * La mascara que aporta el PIN.
+     *
+     * PBKDF2-SHA256 y no Argon2id: WebCrypto no tiene Argon2id, y este
+     * fichero ES el navegador. Con Argon2id no se podria abrir nada
+     * aqui, asi que no se "mejora" sin cambiar antes las cinco
+     * implementaciones a la vez.
+     *
+     * La sal son los 32 bytes CRUDOS del localizador, no su texto
+     * hexadecimal. Sale del sobre de curva ya en binario y asi entra;
+     * pasarlo a hexadecimal daria otra mascara y nada abriria.
+     *
+     * @param {string}     szPin  el PIN que ha escrito la persona
+     * @param {Uint8Array} arrSal los 32 bytes del localizador
+     * @param {number}     nIter  iteraciones, leidas de la cabecera
+     * @returns {Uint8Array} 32 bytes
+     */
+    async function mascaraPin(szPin, arrSal, nIter) {
+        var objBase = await crypto.subtle.importKey(
+            'raw', new TextEncoder().encode(szPin), 'PBKDF2',
+            false, ['deriveBits']);
+
+        return new Uint8Array(await crypto.subtle.deriveBits({
+            name: 'PBKDF2',
+            salt: arrSal,
+            iterations: nIter,
+            hash: 'SHA-256'
+        }, objBase, 256));
+    }
+
+    /**
      * Puts the two pieces together and returns the MIME in the clear.
+     *
+     * Un PIN equivocado no se distingue de una pieza alterada, y es a
+     * proposito: las dos cosas dan otra clave y mueren en la etiqueta
+     * GCM. Quien llame decide como lo cuenta.
      *
      * @param {string} szHead  the eHead, just as it arrived (JSON)
      * @param {string} szBase  where to download the second piece from
+     * @param {string} [szPin] el segundo canal, si el correo lo lleva
      */
-    async function abrir(szHead, szBase) {
+    async function abrir(szHead, szBase, szPin) {
         if (!objClave) { throw new Error('sin_clave'); }
+
+        if (szPin === undefined || szPin === null || szPin === '') {
+            szPin = PIN_DEFECTO;
+        }
 
         var objHead;
         try {
@@ -317,10 +371,20 @@ window.daeCrypto = (function () {
             throw new Error('cabecera');
         }
 
-        // Una version que no sea DAE-3 no se intenta. Antes habia dos
+        // Una version que no sea DAE-4 no se intenta. Antes habia tres
         // ramas mas y ya no existen; adivinar el formato seria sacar una
         // llave equivocada y llamarlo "alterado".
-        if (objHead.szVersion !== 'DAE-3') { throw new Error('cabecera'); }
+        if (objHead.szVersion !== 'DAE-4') { throw new Error('cabecera'); }
+
+        // Las iteraciones se leen de la cabecera y NUNCA de una
+        // constante: un correo sellado antes de subirlas tiene que
+        // seguir abriendose. Se comprueba el rango porque el numero
+        // viene de fuera y aqui se convierte en tiempo de CPU.
+        var nIter = Number(objHead.nPinIter);
+        if (!Number.isInteger(nIter) ||
+            nIter < PIN_ITER_MIN || nIter > PIN_ITER_MAX) {
+            throw new Error('cabecera');
+        }
 
         // Every entry gets tried: a message can go sealed for several
         // recipients and only one of them is ours. The rest failing is
@@ -336,7 +400,14 @@ window.daeCrypto = (function () {
         if (!arrAbierta) { throw new Error('no_es_para_ti'); }
 
         var arrClaveAes = arrAbierta.slice(0, 32);
-        var szLocaliza  = hex(arrAbierta.slice(32));
+
+        // Dos formas del mismo dato, y hacen falta las dos: la URL pide
+        // el hexadecimal y la sal del PIN quiere los bytes crudos. Se
+        // separan aqui para que nadie enchufe el texto donde va el
+        // binario, que es el fallo que rompe la interoperabilidad sin
+        // dar la cara.
+        var arrLocaliza = arrAbierta.slice(32);
+        var szLocaliza  = hex(arrLocaliza);
 
         // The second piece. The locator IS the credential.
         var objResp = await fetch(szBase + '/ebody/' + szLocaliza, { credentials: 'omit' });
@@ -367,6 +438,15 @@ window.daeCrypto = (function () {
             await crypto.subtle.digest('SHA-256', arrParaHash));
         for (var i = 0; i < arrClaveAes.length; i++) {
             arrClaveAes[i] ^= arrMascara[i];
+        }
+
+        // Y la segunda mascara, la del PIN. Son dos defensas distintas:
+        // la de arriba exige tener las dos piezas enteras, esta exige
+        // saber algo que llego por otro camino. Faltando cualquiera de
+        // las dos sale otra clave y no se descifra nada.
+        var arrPin = await mascaraPin(szPin, arrLocaliza, nIter);
+        for (var q = 0; q < arrClaveAes.length; q++) {
+            arrClaveAes[q] ^= arrPin[q];
         }
 
         // And now the tag stuck at the end, the way WebCrypto expects.

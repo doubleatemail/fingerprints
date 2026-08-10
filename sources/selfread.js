@@ -22,6 +22,7 @@
     var elFile  = document.getElementById('daeSelfFile');
     var elPass  = document.getElementById('daeSelfPass');
     var elAviso = document.getElementById('daeSelfAviso');
+    var elPin   = document.getElementById('daeSelfPin');
     var elSalida = document.getElementById('daeSelfSalida');
     var arrUrls = [];
 
@@ -105,7 +106,12 @@
                 var szJson = await leerFichero(elFile.files[0]);
                 await window.daeCrypto.cargar(szJson, elPass.value);
             }
-            var szCrudo = await window.daeCrypto.abrir(szHead, '');
+            // El PIN, si el correo lleva. Va vacio casi siempre y
+            // entonces daecrypto usa el de por defecto. Sin esto, un
+            // correo con PIN no se podria abrir NUNCA con la llave
+            // propia: se quedaria en "alterado" sin decir por que.
+            var szPin = elPin ? elPin.value.trim() : '';
+            var szCrudo = await window.daeCrypto.abrir(szHead, '', szPin);
             pintar(window.daeMime.leer(szCrudo));
         } catch (objErr) {
             window.daeCrypto.olvidar();          // leave nothing half-done

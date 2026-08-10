@@ -13,6 +13,14 @@ and it will not connect anywhere:
 It joins the two pieces and writes an ordinary .eml file, which you can
 open with Thunderbird, Outlook, Apple Mail or any other program.
 
+If the email carries a PIN, add it:
+
+    python dae_open.py mensaje.ehead --clave mi_clave.txt --pin 314159
+
+The PIN does not travel with the email: whoever sent it has to tell it
+to you by another route. Without --pin, "000000" is used, which is what
+the emails that carry no real PIN are sealed with.
+
 WHY THIS EXISTS
 ---------------
 Your private key never leaves your computer. The only thing this
@@ -45,10 +53,11 @@ FORMAT (for anyone who wants to write their own version)
 --------------------------------------------------------
 The eHead is a JSON:
 
-    szVersion    "DAE-3"
-    szAlgo       "A256GCM+X25519+AONT"
+    szVersion    "DAE-4"
+    szAlgo       "A256GCM+X25519+AONT+PIN"
     szIv         12 bytes in base64
     szTag        16 bytes in base64, the GCM tag
+    nPinIter     PBKDF2 iterations used for the PIN
     nBlockSize   size of the complete ciphertext
     nHeadSize    how many bytes of that ciphertext go in the eHead
     arrEncKeys   key fingerprint -> base64 of the sealed envelope
@@ -81,10 +90,13 @@ message can be sealed for several people at once.
 THE IMPORTANT PART, AND IT IS THE POINT OF THE PROTOCOL
 ------------------------------------------------------
 The 32 bytes that come out of that envelope are NOT the key: the key
-comes masked. The real one is obtained like this:
+comes masked, twice. The real one is obtained like this:
 
-    mascara = sha256(b"DAE-AONT-v2" + cifrado_completo)
-    clave   = clave_enmascarada XOR mascara
+    mascara     = sha256(b"DAE-AONT-v2" + cifrado_completo)
+    mascara_pin = PBKDF2-HMAC-SHA256(PIN,
+                                     salt = localizador, 32 RAW bytes,
+                                     nPinIter, 32 bytes)
+    clave       = clave_enmascarada XOR mascara XOR mascara_pin
 
 That is: the ENTIRE ciphertext is needed, down to the last byte, just
 to work out the key. Whoever is missing one byte does not get the key,
@@ -93,6 +105,21 @@ not that they lack computing power: they lack data, and data that does
 not exist cannot be computed. It is called an all-or-nothing transform,
 and it is the reason why intercepting one of the two pieces is
 absolutely useless.
+
+The salt is the locator in its 32 RAW bytes, NOT the 64 characters of
+its hexadecimal. Both seal without complaining and neither opens what
+the other sealed, so it is worth checking twice.
+
+nPinIter is read from the header and never from a constant here: the
+number gets raised over time, and mail sealed before the change has to
+keep opening. It is 1 when the PIN is the default "000000", where a
+slow derivation would buy nothing because that PIN is public, and
+600000 when the PIN is real. Anything outside 1..10000000 is refused,
+so a doctored header cannot turn opening into an endless computation.
+
+PBKDF2 and not Argon2id, which would be better against the dedicated
+hardware that is exactly what attacks a short PIN: WebCrypto has no
+Argon2id, and the browser has to open this same email.
 
 There is no checksum in the header, and that absence is deliberate:
 the digest of the complete ciphertext is exactly the value that takes
@@ -126,11 +153,29 @@ except ImportError:
 
 SERVIDOR_POR_DEFECTO = "https://doubleat.email"
 AGENTE = "dae_open.py/1.0 (+https://doubleat.email)"
-VERSION = "DAE-3"
+VERSION = "DAE-4"
 
 # Domain label of the all-or-nothing mask. It goes inside the digest
 # so that value is good for nothing else in the protocol.
 ETIQUETA_AONT = b"DAE-AONT-v2"
+
+# The PIN of the mail that carries no real PIN. Public on purpose: it
+# is written here and in every other implementation.
+PIN_DEFECTO = "000000"
+
+# Bounds for nPinIter. The header arrives with the email and nothing
+# vouches for it, so a tampered count could ask this program for an
+# amount of work that never ends.
+PIN_ITER_MIN = 1
+PIN_ITER_MAX = 10000000
+
+# Used ONLY when the header has no nPinIter at all, which no sealer
+# produces and means the header is broken. It is not the iteration
+# count of anything: a real one is always read from the header, or
+# mail sealed before the number was raised would stop opening. The
+# value matches what clsEBlock.php falls back to, so that a broken
+# header behaves the same in both.
+PIN_ITER_SI_FALTA = 600000
 
 # Label of the HKDF. Ties the derived key to THIS use: if anything
 # else is ever derived from the same shared secret it will not come
@@ -268,6 +313,10 @@ def main():
     p.add_argument("--clave", "-k", required=True,
                    help="tu clave privada X25519: un fichero de texto con "
                         "64 caracteres hexadecimales")
+    p.add_argument("--pin", default=None, metavar="NNNNNN",
+                   help="el PIN del correo, si lleva. No viaja con el "
+                        "mensaje: quien te lo envio tiene que decirtelo por "
+                        "otro camino. Si no lo pones se prueba con 000000")
     p.add_argument("--salida", "-o", default=None, help="fichero .eml a escribir")
     p.add_argument("--servidor", "-s", default=SERVIDOR_POR_DEFECTO,
                    help="de donde bajar la segunda pieza (por defecto %s)"
@@ -276,6 +325,15 @@ def main():
                    help="deja tambien en disco la pieza descargada, por si "
                         "quieres guardarla y no volver a depender del servidor")
     args = p.parse_args()
+
+    # A PIN that is not six digits is a warning and not an exit: it is
+    # almost certainly a typo, but refusing outright would make an
+    # email unopenable here on a guess about how it was sealed.
+    pin = args.pin if args.pin is not None else PIN_DEFECTO
+    if args.pin is not None and (len(pin) != 6
+                                 or any(c not in "0123456789" for c in pin)):
+        aviso("AVISO: los PIN son de 6 cifras y ese no lo es. Se prueba "
+              "igualmente.")
 
     # --- the two pieces ---------------------------------------------
     try:
@@ -328,14 +386,30 @@ def main():
         aviso("AVISO: el mensaje deberia medir %s bytes y mide %d. "
               "Puede que falte parte del eBody." % (esperado, len(cifrado)))
 
-    # --- remove the mask ----------------------------------------------
+    # --- remove the two masks -------------------------------------------
     # This is where the protocol delivers what it promises. The key
     # that came in the header is good for nothing on its own: it has
     # to be undone with the digest of the complete ciphertext, and for
     # that both whole pieces are needed. If a single byte is missing a
     # different key comes out, the decryption below fails, and nothing
-    # is read.
+    # is read. The second mask asks for the PIN in the same way: a
+    # wrong one is not detected here, it just yields another key.
     mascara = hashlib.sha256(ETIQUETA_AONT + cifrado).digest()
+    clave_aes = bytes(a ^ b for a, b in zip(clave_aes, mascara))
+
+    # From the header, never from a constant: the number gets raised
+    # over time and the mail sealed before the change has to open.
+    n_iter = cabecera.get("nPinIter", PIN_ITER_SI_FALTA)
+    if not isinstance(n_iter, int) or isinstance(n_iter, bool) \
+            or n_iter < PIN_ITER_MIN or n_iter > PIN_ITER_MAX:
+        sys.exit("La cabecera de este correo esta mal: dice que el PIN se\n"
+                 "deriva con %r vueltas, que no es un numero de vueltas\n"
+                 "posible. O esta corrompida, o la ha tocado alguien."
+                 % (n_iter,))
+
+    # The salt is the locator RAW, not its hexadecimal.
+    mascara = hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"),
+                                  localizador, n_iter, 32)
     clave_aes = bytes(a ^ b for a, b in zip(clave_aes, mascara))
 
     # --- decrypt -----------------------------------------------------
@@ -346,6 +420,20 @@ def main():
         # AESGCM expects the tag stuck to the end of the ciphertext
         claro = AESGCM(clave_aes).decrypt(iv, cifrado + tag, None)
     except Exception:
+        # A wrong PIN and a missing byte fail in exactly the same way,
+        # so the reason has to be guessed from the header. When it says
+        # the mail carries a real PIN, that is far and away the likely
+        # cause, and printing only "no se ha podido descifrar" would
+        # leave the user with no idea what to do next.
+        if n_iter > 1:
+            sys.exit("Este correo lleva PIN y no se ha podido abrir.\n"
+                     "%s\n"
+                     "El PIN no viaja con el mensaje: quien te lo envio\n"
+                     "tiene que decirtelo por otro camino, y aqui se pone\n"
+                     "con --pin. Si el que has puesto es el bueno, es que\n"
+                     "a alguna de las dos piezas le falta algo."
+                     % ("Ponlo con --pin." if args.pin is None
+                        else "El PIN que has puesto no es el de este correo."))
         sys.exit("El mensaje no se ha podido descifrar.\n"
                  "Las piezas estan alteradas, incompletas, o no son del\n"
                  "mismo correo. Con el correo puzzle basta que falte un\n"

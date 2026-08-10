@@ -38,6 +38,24 @@ With --solo-ficheros it sends nothing: it leaves the .ehead and the
 .ebody on disk so you can look at them before deciding.
 
 ------------------------------------------------------
+THE PIN
+------------------------------------------------------
+Every message carries a PIN, and without --pin it is "000000".
+
+That default protects NOTHING: it is public and it is written here.
+It exists so that there is ONE encryption path instead of two, because
+the path that gets used rarely gets tested rarely and ends up being
+the one that breaks.
+
+A real --pin does protect, and against a different attack than the
+puzzle does. The puzzle protects you from whoever INTERCEPTS the mail;
+it does nothing against whoever gets INTO the recipient's mailbox,
+because that one has the eHead and has the key. A PIN that travels by
+another channel -say a phone call- closes that hole. So tell it to
+your recipient by any route other than this email, or they will not be
+able to open it.
+
+------------------------------------------------------
 THE KEY FILES
 ------------------------------------------------------
 Everything here is raw bytes in hexadecimal, in plain text files. No
@@ -67,12 +85,14 @@ WHAT IT DOES INSIDE, IN ORDER
     ENTIRE ciphertext. Without both complete pieces it cannot be
     recovered, so whoever intercepts one gets nothing out of it,
     neither with time, nor with the recipient's private key.
- 6. Splits the result: 10 % goes in the eHead and the rest in the
+ 6. Masks it a second time with the PIN, derived slowly. Missing
+    either mask, a different key comes out and nothing decrypts.
+ 7. Splits the result: 10 % goes in the eHead and the rest in the
     eBody.
- 7. Delivers the two pieces. The server distributes without opening
+ 8. Delivers the two pieces. The server distributes without opening
     anything.
 
-Steps 4, 5 and 6 have to produce EXACTLY the same as clsEBlock.php and
+Steps 4, 5, 6 and 7 have to produce EXACTLY the same as clsEBlock.php and
 as daeseal.js. There is a cross-check in tests/testCruzado.php: if the
 three do not match byte for byte, there is mail that opens in one place
 and not in another. If you change something here, pass that test.
@@ -102,11 +122,31 @@ except ImportError:
 
 AGENTE = "dae_send.py/1.0 (+https://doubleat.email)"
 
-VERSION       = "DAE-3"
-ALGO          = "A256GCM+X25519+AONT"
+VERSION       = "DAE-4"
+ALGO          = "A256GCM+X25519+AONT+PIN"
 ETIQUETA_AONT = b"DAE-AONT-v2"
 MAX_HEAD      = 102400      # 100 KB
 RATIO_HEAD    = 0.10        # 10 %
+
+# The PIN when there is no second channel. Public on purpose: see the
+# note at the top of the file. It buys a single encryption path, not
+# protection.
+PIN_DEFECTO = "000000"
+
+# PBKDF2-SHA256 and not Argon2id. Argon2id would be better -it resists
+# the dedicated hardware that is exactly what attacks a short PIN- but
+# WebCrypto does not have it, and the browser is one of the five
+# implementations that must agree with this one. Being weaker per unit
+# of cost, it is compensated with iterations.
+PIN_ITER = 600000
+
+# With 000000 the slow derivation buys NOTHING: the PIN is public, so
+# the attacker has nothing to try. Spending 600.000 iterations there
+# would be seconds per message, sealing and opening, for zero. The
+# number travels in the header, so the format does not change: only
+# what it costs. It does tell whoever reads the header whether that
+# mail carries a real PIN, and that is worth less than the seconds.
+PIN_ITER_DEFECTO = 1
 
 MARCA_FIRMA = "DAE-SIG1"
 ALGO_FIRMA  = "Ed25519"
@@ -332,7 +372,24 @@ def envolver(carga, destino):
     return eph_pub + nonce + AESGCM(kek).encrypt(nonce, carga, None)
 
 
-def sellar(claro, publicas):
+def mascara_pin(pin, sal, iteraciones):
+    """The mask the PIN contributes.
+
+    Six digits are a million combinations: nothing, if they can be
+    tried fast. This is what makes trying them cost, and it only holds
+    up alongside the other two defences: both pieces are needed to even
+    start, and the downloads of the second one are counted. Remove any
+    of the three and the PIN is decoration.
+
+    The salt is the locator, RAW, which is already random and unique
+    per message: two emails with the same PIN do not give the same
+    mask, so no precomputed table can be reused across messages.
+    """
+    return hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"), sal,
+                               iteraciones, 32)
+
+
+def sellar(claro, publicas, pin=PIN_DEFECTO):
     clave = secrets.token_bytes(32)
     iv    = secrets.token_bytes(12)
 
@@ -352,6 +409,16 @@ def sellar(claro, publicas):
     clave_out = bytes(a ^ b for a, b in zip(clave, mascara))
 
     body_id  = secrets.token_bytes(32)
+
+    # THE PIN, second channel. It has to go into the CRYPTOGRAPHY: if
+    # the server checked it before handing over the second piece, the
+    # protection would depend on us behaving. Note the salt is the 32
+    # RAW bytes of the locator, not its hex text: get that wrong and
+    # the mail still seals, it just never opens anywhere else.
+    n_iter    = PIN_ITER_DEFECTO if pin == PIN_DEFECTO else PIN_ITER
+    clave_out = bytes(a ^ b for a, b in
+                      zip(clave_out, mascara_pin(pin, body_id, n_iter)))
+
     semilla  = clave_out + body_id
 
     # One curve envelope per recipient. Each carries the MASKED key
@@ -373,6 +440,10 @@ def sellar(claro, publicas):
         "szAlgo":     ALGO,
         "szIv":       base64.b64encode(iv).decode("ascii"),
         "szTag":      base64.b64encode(tag).decode("ascii"),
+        # The iteration count travels here and does not live only in
+        # the code: raising it tomorrow must not break the mail that
+        # has already gone out.
+        "nPinIter":   n_iter,
         "nBlockSize": n_block,
         "nHeadSize":  n_head,
         "arrEncKeys": enc_keys,
@@ -462,6 +533,11 @@ def main():
     p.add_argument("--copia", metavar="CLAVE_PUBLICA",
                    help="tu clave publica X25519 en hexadecimal, para poder "
                         "leer tu propia copia")
+    p.add_argument("--pin", metavar="NNNNNN",
+                   help="PIN de 6 cifras que hara falta para abrir el correo. "
+                        "Diselo a tu destinatario por otro canal, nunca en "
+                        "este mismo correo. Si no lo pones se usa 000000, que "
+                        "es publico y no protege de nada")
     p.add_argument("--retencion", choices=["permanent", "expiring", "ephemeral"],
                    help="cuanto vive la segunda pieza; por defecto, tu preferencia")
     p.add_argument("--servidor", default="https://doubleat.email")
@@ -469,6 +545,16 @@ def main():
     p.add_argument("--solo-ficheros", metavar="PREFIJO",
                    help="no envia: deja PREFIJO.ehead y PREFIJO.ebody en disco")
     args = p.parse_args()
+
+    # A malformed PIN is caught before anything is encrypted: past this
+    # point the mistake would only show up at the far end, as mail
+    # nobody can open.
+    # isdigit() is not used: it says yes to digits from other scripts,
+    # which would seal fine here and derive a different mask anywhere
+    # that reads them as text.
+    pin = args.pin if args.pin is not None else PIN_DEFECTO
+    if len(pin) != 6 or any(c not in "0123456789" for c in pin):
+        sys.exit("El PIN tiene que ser de 6 cifras, del 0 al 9.")
 
     texto = args.texto
     if args.texto_fichero:
@@ -504,8 +590,15 @@ def main():
         aviso("  (incluida tu clave, para poder leer tu copia)")
 
     aviso("Cifrando en este ordenador...")
-    cabecera, cuerpo, body_id = sellar(claro, publicas)
+    cabecera, cuerpo, body_id = sellar(claro, publicas, pin)
     aviso("  eHead %d bytes,  eBody %d bytes" % (len(cabecera), len(cuerpo)))
+
+    # Only said when the PIN is real. Announcing "protegido con PIN"
+    # with 000000 would be announcing a protection that does not
+    # exist, and the user would stop looking for another.
+    if pin != PIN_DEFECTO:
+        aviso("  Lleva PIN. Diselo a tu destinatario por otro canal:")
+        aviso("  si va en este mismo correo, no protege de nada.")
 
     if args.solo_ficheros:
         with open(args.solo_ficheros + ".ehead", "w", encoding="utf-8") as f:

@@ -205,8 +205,16 @@
 
             arrMime = await firmarSiSePuede(arrMime, objCasilla.dataset.yo || '');
 
+            // EL PIN. Sin esta linea el navegador sellaria con 000000
+            // mientras el remitente cree que ha puesto uno suyo: el
+            // correo saldria sin proteccion y no se enteraria nadie
+            // hasta que hiciera falta. Por este camino el servidor NO ve
+            // el PIN, asi que no puede tapar el hueco por nosotros.
+            var objPin = document.getElementById('szPin');
+            var szPin  = objPin ? objPin.value.trim() : '';
+
             decir(objCasilla.dataset.cifrando || '...');
-            var objSello = await window.daeSeal.sellar(arrMime, arrPubs);
+            var objSello = await window.daeSeal.sellar(arrMime, arrPubs, szPin);
 
             decir(objCasilla.dataset.enviando || '...');
             var objDatos = new FormData();
