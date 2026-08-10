@@ -72,6 +72,14 @@
         return sz;
     }
 
+    function deHex(sz) {
+        var arr = new Uint8Array(sz.length / 2);
+        for (var i = 0; i < arr.length; i++) {
+            arr[i] = parseInt(sz.substr(i * 2, 2), 16);
+        }
+        return arr;
+    }
+
     /**
      * Signs the message, if the user key is loaded here.
      *
@@ -95,14 +103,17 @@
         // not get it out of a private one. It is asked of the directory,
         // which is public by definition. That way the .daekey files
         // already exported, which do not carry it inside, need no migrating.
-        var szPem = await clavePublicaDe(szYo);
-        var arrDer = deB64Pem(szPem);
-        var szHuella = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', arrDer)));
+        //
+        // Es la huella de la llave que publica el directorio, la misma
+        // que indexa arrEncKeys. Identifica al firmante, no prueba nada
+        // por si sola: lo que se comprueba es la firma.
+        var arrPub = await clavePublicaDe(szYo);
+        var szHuella = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', arrPub)));
 
         var arrFirma = await window.daeCrypto.firmar(arrMime);
 
         var szCabecera = JSON.stringify({
-            szAlgo:      'RSA-SHA256',
+            szAlgo:      'Ed25519',
             szSigner:    szYo.trim().toLowerCase(),
             szSignerFp:  szHuella,
             szSignature: b64(arrFirma)
@@ -116,18 +127,34 @@
         return arrTodo;
     }
 
-    function deB64Pem(szPem) {
-        var sz = window.atob(szPem.replace(/-----[^-]+-----/g, '').replace(/\s+/g, ''));
-        var arr = new Uint8Array(sz.length);
-        for (var i = 0; i < sz.length; i++) { arr[i] = sz.charCodeAt(i); }
-        return arr;
-    }
-
+    /**
+     * La llave publica X25519 de una direccion, en crudo.
+     *
+     * El directorio ya no sirve un PEM: son 64 caracteres hexadecimales
+     * con su etiqueta delante, "curve" la de cifrar y "sign" la de
+     * firmar. Aqui solo interesa la de cifrar; la de firmar la mira
+     * quien verifica, que no es este lado. Ver pages/keydir.php.
+     *
+     * Un cuerpo que no encaje se rechaza aqui, y no mas adelante, donde
+     * el fallo saldria disfrazado de "no se ha podido cifrar".
+     *
+     * @returns {Uint8Array} 32 bytes
+     */
     async function clavePublicaDe(szEmail) {
         var objResp = await fetch('/.well-known/dae/hu/' + await hu(szEmail),
                                   { credentials: 'omit' });
         if (!objResp.ok) { throw new Error('sin_clave:' + szEmail); }
-        return objResp.text();
+
+        var szHex = '';
+        (await objResp.text()).split('\n').forEach(function (szLinea) {
+            var arrTrozo = szLinea.trim().toLowerCase().split(/\s+/);
+            if (arrTrozo[0] === 'curve') { szHex = arrTrozo[1] || ''; }
+        });
+
+        if (!/^[0-9a-f]{64}$/.test(szHex)) {
+            throw new Error('clave_rara:' + szEmail);
+        }
+        return deHex(szHex);
     }
 
     function direcciones() {
@@ -160,9 +187,9 @@
 
         try {
             decir(objCasilla.dataset.buscando || '...');
-            var arrPems = [];
+            var arrPubs = [];
             for (var i = 0; i < arrPara.length; i++) {
-                arrPems.push(await clavePublicaDe(arrPara[i]));
+                arrPubs.push(await clavePublicaDe(arrPara[i]));
             }
 
             decir(objCasilla.dataset.montando || '...');
@@ -179,7 +206,7 @@
             arrMime = await firmarSiSePuede(arrMime, objCasilla.dataset.yo || '');
 
             decir(objCasilla.dataset.cifrando || '...');
-            var objSello = await window.daeSeal.sellar(arrMime, arrPems);
+            var objSello = await window.daeSeal.sellar(arrMime, arrPubs);
 
             decir(objCasilla.dataset.enviando || '...');
             var objDatos = new FormData();

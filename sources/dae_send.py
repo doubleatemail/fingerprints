@@ -29,7 +29,7 @@ HOW TO USE IT
                        --asunto "Hola" \\
                        --texto "Nos vemos el martes." \\
                        --adjunto contrato.pdf \\
-                       --firmar mi_clave_privada.pem
+                       --firmar mi_clave_firma.txt
 
 It will ask you for your mailbox password, the same one as the mail. It
 is not stored anywhere.
@@ -38,12 +38,28 @@ With --solo-ficheros it sends nothing: it leaves the .ehead and the
 .ebody on disk so you can look at them before deciding.
 
 ------------------------------------------------------
+THE KEY FILES
+------------------------------------------------------
+Everything here is raw bytes in hexadecimal, in plain text files. No
+PEM: there is one algorithm for each job and one length for each key,
+so an envelope would buy nothing and would only make the files harder
+to check by eye.
+
+    --firmar        your Ed25519 secret key, 128 hex characters
+                    (64 bytes: seed(32) || public(32))
+    --clave-para    a recipient X25519 public key, 64 hex characters
+    --copia         your own X25519 public key, 64 hex characters
+
+That is the shape the webmail exports them in, and the shape the key
+directory serves.
+
+------------------------------------------------------
 WHAT IT DOES INSIDE, IN ORDER
 ------------------------------------------------------
  1. Assembles your message in MIME, attachments included.
- 2. Signs it, if you give it your private key. The signature goes
-    INSIDE what is encrypted: outside it would announce to whoever
-    intercepts who is writing.
+ 2. Signs it with Ed25519, if you give it your secret key. The
+    signature goes INSIDE what is encrypted: outside it would announce
+    to whoever intercepts who is writing.
  3. Looks up each recipient's public key in the directory.
  4. Encrypts everything with AES-256-GCM, with a new key for this
     message.
@@ -77,27 +93,38 @@ from email.message import EmailMessage
 
 try:
     from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import padding
+    from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 except ImportError:
     sys.exit("Falta la biblioteca 'cryptography'.\n"
              "Instalala con:  pip install cryptography")
 
 AGENTE = "dae_send.py/1.0 (+https://doubleat.email)"
 
-VERSION       = "DAE-2"
-ALGO          = "A256GCM+RSA-OAEP+AONT"
+VERSION       = "DAE-3"
+ALGO          = "A256GCM+X25519+AONT"
 ETIQUETA_AONT = b"DAE-AONT-v2"
 MAX_HEAD      = 102400      # 100 KB
 RATIO_HEAD    = 0.10        # 10 %
 
 MARCA_FIRMA = "DAE-SIG1"
-ALGO_FIRMA  = "RSA-SHA256"
+ALGO_FIRMA  = "Ed25519"
+
+# Label of the HKDF. Ties the derived key to THIS use: if anything
+# else is ever derived from the same shared secret it will not come
+# out the same, and the two cannot be confused.
+INFO_KEK = b"DAE-3-KEK"
+
+LONGITUD_PUB = 32           # X25519, public and private are both 32
 
 # z-base32 alphabet, the one the key directory uses. It is not the
 # usual base32: it is ordered so that the characters that get confused
 # when read out loud fall far away from each other.
 ALFABETO_Z = "ybndrfg8ejkmcpqxot1uwisza345h769"
+
+RAW = serialization.Encoding.Raw
+RAW_PUB = serialization.PublicFormat.Raw
 
 
 def aviso(texto):
@@ -128,13 +155,39 @@ def hu(direccion):
     return zbase32(hashlib.sha1(local.encode("utf-8")).digest())
 
 
+def desde_hex(texto, longitud):
+    """The raw bytes of a hex string, or None if it is not that."""
+    try:
+        crudo = bytes.fromhex("".join(texto.split()))
+    except ValueError:
+        return None
+    return crudo if len(crudo) == longitud else None
+
+
+def leer_clave_publica(texto):
+    """Pulls the X25519 public key out of directory text.
+
+    The directory answers in plain text, one labelled key per line
+    ('curve <64 hex>' and, when there is one, 'sign <64 hex>'), because
+    that parses with two lines of code in any language. A file holding
+    nothing but the 64 characters is taken too: that is what somebody
+    ends up with after copying a key by hand.
+    """
+    for linea in texto.strip().splitlines():
+        partes = linea.split()
+        if len(partes) == 2 and partes[0] == "curve":
+            return desde_hex(partes[1], LONGITUD_PUB)
+        if len(partes) == 1:
+            return desde_hex(partes[0], LONGITUD_PUB)
+    return None
+
+
 def clave_publica_de(servidor, direccion):
     url = "%s/.well-known/dae/hu/%s" % (servidor.rstrip("/"), hu(direccion))
     peticion = urllib.request.Request(url, headers={"User-Agent": AGENTE})
     try:
         with urllib.request.urlopen(peticion, timeout=30) as resp:
-            pem = resp.read().decode("ascii")
-            huella = resp.headers.get("X-DAE-Fingerprint", "")
+            cuerpo = resp.read().decode("ascii", "replace")
     except urllib.error.HTTPError as e:
         if e.code == 404:
             sys.exit("No hay clave publicada para %s.\n"
@@ -144,14 +197,34 @@ def clave_publica_de(servidor, direccion):
     except urllib.error.URLError as e:
         sys.exit("No se ha podido consultar el directorio: %s" % e.reason)
 
-    # The fingerprint is ALWAYS shown. Whoever serves the directory
-    # could slip in their own key, and encryption does not protect
-    # against that: the only thing that does is you comparing it with
-    # your recipient over another channel.
-    if huella:
-        aviso("  %s -> %s" % (direccion, " ".join(
-            huella.upper()[i:i + 4] for i in range(0, len(huella), 4))))
-    return pem
+    publica = leer_clave_publica(cuerpo)
+    if publica is None:
+        sys.exit("La clave que sirve el directorio para %s no se entiende.\n"
+                 "Se esperaba una X25519 en hexadecimal." % direccion)
+
+    # The fingerprint is ALWAYS shown, and it is computed here from the
+    # key that arrived instead of trusting the X-DAE-Fingerprint header:
+    # whoever serves the directory could slip in their own key AND its
+    # matching fingerprint. Encryption does not protect against that.
+    # The only thing that does is you comparing this with your
+    # recipient over another channel.
+    huella = hashlib.sha256(publica).hexdigest()
+    aviso("  %s -> %s" % (direccion, " ".join(
+        huella.upper()[i:i + 4] for i in range(0, len(huella), 4))))
+    return publica
+
+
+def clave_publica_de_fichero(ruta):
+    try:
+        with open(ruta, "r", encoding="utf-8") as f:
+            publica = leer_clave_publica(f.read())
+    except OSError as e:
+        sys.exit("No se ha podido leer %s: %s" % (ruta, e))
+
+    if publica is None:
+        sys.exit("El fichero %s no tiene una clave publica X25519.\n"
+                 "Se esperaban 64 caracteres hexadecimales." % ruta)
+    return publica
 
 
 # ---------------------------------------------------------------------------
@@ -178,33 +251,41 @@ def montar_mime(de, para, asunto, texto, adjuntos):
     return msg.as_bytes()
 
 
-def firmar(claro, ruta_clave, remitente, contrasena):
+def firmar(claro, ruta_clave, remitente):
     """Wraps the message with its signature, BEFORE encrypting it.
 
     The signature has to end up inside the ciphertext: outside it would
     tell whoever intercepts the email who wrote it, which is exactly
     what the protocol avoids.
     """
-    with open(ruta_clave, "rb") as f:
-        datos = f.read()
-
     try:
-        privada = serialization.load_pem_private_key(
-            datos, password=contrasena.encode("utf-8") if contrasena else None)
-    except (ValueError, TypeError):
-        sys.exit("No he podido abrir tu clave privada.\n"
-                 "Si tiene contrasenya, pasala con --clave-contrasena.")
+        with open(ruta_clave, "r", encoding="utf-8") as f:
+            crudo = desde_hex(f.read(), 64)
+    except OSError as e:
+        sys.exit("No se ha podido leer %s: %s" % (ruta_clave, e))
 
-    firma = privada.sign(claro, padding.PKCS1v15(), hashes.SHA256())
+    if crudo is None:
+        sys.exit("No he podido leer tu clave de firma.\n"
+                 "Tiene que ser un fichero de texto con 128 caracteres\n"
+                 "hexadecimales, que es como te la escribe el webmail.")
 
-    publica_der = privada.public_key().public_bytes(
-        encoding=serialization.Encoding.DER,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo)
+    # An Ed25519 secret key is seed(32) || public(32), the layout
+    # libsodium uses. Signing needs only the seed; the tail is
+    # recomputed and compared, which catches a truncated or swapped
+    # file here instead of downstream, where it would show up as
+    # signatures that nobody can verify.
+    privada = ed25519.Ed25519PrivateKey.from_private_bytes(crudo[:32])
+    publica = privada.public_key().public_bytes(RAW, RAW_PUB)
+    if publica != crudo[32:]:
+        sys.exit("Tu clave de firma no cuadra consigo misma.\n"
+                 "El fichero esta cortado o cambiado.")
+
+    firma = privada.sign(claro)
 
     cabecera = json.dumps({
         "szAlgo":      ALGO_FIRMA,
         "szSigner":    remitente.strip().lower(),
-        "szSignerFp":  hashlib.sha256(publica_der).hexdigest(),
+        "szSignerFp":  hashlib.sha256(publica).hexdigest(),
         "szSignature": base64.b64encode(firma).decode("ascii"),
     }, separators=(",", ":"))
 
@@ -215,7 +296,43 @@ def firmar(claro, ruta_clave, remitente, contrasena):
 #  The sealing.  THIS has to match clsEBlock.php and daeseal.js
 # ---------------------------------------------------------------------------
 
-def sellar(claro, pems):
+def envolver(carga, destino):
+    """Seals carga for the owner of the X25519 public key destino.
+
+    ECIES out of a textbook, assembled by hand because WebCrypto has no
+    crypto_box_seal and the browser is one of the implementations that
+    must agree with this one byte for byte.
+
+    The ephemeral is new per recipient on purpose: with a single one,
+    two recipients of the same email could work out it went to both.
+
+    Returns eph_pub(32) || nonce(12) || ciphertext and tag.
+    """
+    efimera = x25519.X25519PrivateKey.generate()
+    eph_pub = efimera.public_key().public_bytes(RAW, RAW_PUB)
+
+    try:
+        compartido = efimera.exchange(
+            x25519.X25519PublicKey.from_public_bytes(destino))
+    except ValueError:
+        # An all-zero shared secret means the public key was a
+        # low-order point: one chosen so the result is predictable.
+        # Refuse rather than encrypt under something the other side
+        # already knows.
+        sys.exit("Una de las claves publicas no sirve para cifrar.\n"
+                 "Comprueba de donde la has sacado.")
+
+    # The salt carries BOTH public keys. Without that, the same shared
+    # secret would give the same key in different contexts, which is
+    # how pieces of one message get replayed into another.
+    kek = HKDF(algorithm=hashes.SHA256(), length=32,
+               salt=eph_pub + destino, info=INFO_KEK).derive(compartido)
+
+    nonce = secrets.token_bytes(12)
+    return eph_pub + nonce + AESGCM(kek).encrypt(nonce, carga, None)
+
+
+def sellar(claro, publicas):
     clave = secrets.token_bytes(32)
     iv    = secrets.token_bytes(12)
 
@@ -237,22 +354,14 @@ def sellar(claro, pems):
     body_id  = secrets.token_bytes(32)
     semilla  = clave_out + body_id
 
+    # One curve envelope per recipient. Each carries the MASKED key
+    # and the locator: the locator whole, because you have to know
+    # which piece to ask for before you have it; the key not until
+    # everything is in hand.
     enc_keys = {}
-    for pem in pems:
-        publica = serialization.load_pem_public_key(pem.encode("ascii"))
-        der = publica.public_bytes(
-            encoding=serialization.Encoding.DER,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo)
-
-        # RSA-OAEP with SHA-1: it is what OpenSSL uses by default and
-        # therefore what is in all the mail already delivered. Changing
-        # it here would leave the messages unreadable for the rest of
-        # the system.
-        sellada = publica.encrypt(semilla, padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA1()),
-            algorithm=hashes.SHA1(), label=None))
-
-        enc_keys[hashlib.sha256(der).hexdigest()] = \
+    for publica in publicas:
+        sellada = envolver(semilla, publica)
+        enc_keys[hashlib.sha256(publica).hexdigest()] = \
             base64.b64encode(sellada).decode("ascii")
 
     n_block = len(cifrado)
@@ -344,13 +453,15 @@ def main():
     p.add_argument("--adjunto", action="append", default=[],
                    help="fichero a adjuntar; repite la opcion para varios")
     p.add_argument("--firmar", metavar="CLAVE",
-                   help="tu clave privada en PEM, para firmar el mensaje")
-    p.add_argument("--clave-contrasena", help="contrasenya de esa clave privada")
-    p.add_argument("--clave-para", action="append", default=[], metavar="PEM",
-                   help="clave publica del destinatario en un fichero, en vez "
-                        "de pedirsela al directorio; repite la opcion para varios")
+                   help="tu clave privada Ed25519, un fichero de texto con "
+                        "128 caracteres hexadecimales, para firmar el mensaje")
+    p.add_argument("--clave-para", action="append", default=[], metavar="FICHERO",
+                   help="clave publica X25519 del destinatario, 64 caracteres "
+                        "hexadecimales en un fichero, en vez de pedirsela al "
+                        "directorio; repite la opcion para varios")
     p.add_argument("--copia", metavar="CLAVE_PUBLICA",
-                   help="tu clave publica, para poder leer tu propia copia")
+                   help="tu clave publica X25519 en hexadecimal, para poder "
+                        "leer tu propia copia")
     p.add_argument("--retencion", choices=["permanent", "expiring", "ephemeral"],
                    help="cuanto vive la segunda pieza; por defecto, tu preferencia")
     p.add_argument("--servidor", default="https://doubleat.email")
@@ -369,7 +480,7 @@ def main():
 
     if args.firmar:
         aviso("Firmando con tu clave privada...")
-        claro = firmar(claro, args.firmar, args.de, args.clave_contrasena)
+        claro = firmar(claro, args.firmar, args.de)
     else:
         aviso("AVISO: sin --firmar, tu destinatario vera el correo como no firmado.")
 
@@ -380,24 +491,20 @@ def main():
     if args.clave_para:
         if len(args.clave_para) != len(args.para):
             sys.exit("Has dado %d destinatarios y %d claves. Tienen que ir "
-                     "en el mismo orden y ser las mismas." 
+                     "en el mismo orden y ser las mismas."
                      % (len(args.para), len(args.clave_para)))
         aviso("Usando las claves que has dado, sin consultar el directorio.")
-        pems = []
-        for ruta in args.clave_para:
-            with open(ruta, "r", encoding="ascii") as f:
-                pems.append(f.read())
+        publicas = [clave_publica_de_fichero(r) for r in args.clave_para]
     else:
         aviso("Buscando las claves publicas:")
-        pems = [clave_publica_de(args.servidor, d) for d in args.para]
+        publicas = [clave_publica_de(args.servidor, d) for d in args.para]
 
     if args.copia:
-        with open(args.copia, "r", encoding="ascii") as f:
-            pems.append(f.read())
+        publicas.append(clave_publica_de_fichero(args.copia))
         aviso("  (incluida tu clave, para poder leer tu copia)")
 
     aviso("Cifrando en este ordenador...")
-    cabecera, cuerpo, body_id = sellar(claro, pems)
+    cabecera, cuerpo, body_id = sellar(claro, publicas)
     aviso("  eHead %d bytes,  eBody %d bytes" % (len(cabecera), len(cuerpo)))
 
     if args.solo_ficheros:

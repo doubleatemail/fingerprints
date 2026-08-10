@@ -9,15 +9,21 @@
  * What it does, in order:
  *
  *   1. Opens the .daekey file with the password the user puts in. It is
- *      our own simple format --PBKDF2 + AES-256-GCM over a PKCS#8--
- *      because WebCrypto cannot open a protected PKCS#8: it does not
- *      implement PBES2. That is why the usual .pem is no good as is.
+ *      our own simple format --PBKDF2 + AES-256-GCM over the two
+ *      private keys-- because WebCrypto cannot open a protected PKCS#8:
+ *      it does not implement PBES2. That is why the usual .pem is no
+ *      good.
  *   2. With that key it opens one arrEncKeys entry of the eHead and
  *      takes out two things: the AES key of the message and the locator
  *      of the other piece.
  *   3. Asks for that piece at /ebody/<locator>. The server does not get
  *      who is asking nor which message it is about: it cannot know.
  *   4. Puts the two together, decrypts with AES-256-GCM, checks the tag.
+ *
+ * Solo se abre DAE-3. DAE-1 y DAE-2, con RSA, se borraron el
+ * 2026-08-10: no habia un solo correo real en esos formatos, y cargar
+ * para siempre con tres caminos de descifrado para nadie era pagar por
+ * nada. Ver clsEBlock.php y 06_AT_AT_PROTOCOL.md, seccion 3.ter.
  *
  * The decrypted key lives in memory and only while the tab lasts. It is
  * not saved in localStorage nor in a cookie on purpose: what is not
@@ -27,10 +33,27 @@
 window.daeCrypto = (function () {
     'use strict';
 
-    var objFirma = null;   // the same key, for signing
-
-    var objClave = null;      // CryptoKey in memory, nothing else
+    var objFirma = null;      // la Ed25519, para firmar
+    var objClave = null;      // la X25519, CryptoKey en memoria y nada mas
+    var arrMiPub = null;      // nuestra publica, hace falta para la sal
     var szQuien  = '';
+
+    var INFO_KEK  = 'DAE-3-KEK';
+    var LEN_PRIV  = 32;
+    var LEN_PUB   = 32;
+    var LEN_NONCE = 12;
+    var LEN_TAG   = 16;
+
+    /**
+     * Envoltura PKCS#8 minima para una privada de curva.
+     *
+     * WebCrypto no importa privadas de X25519 ni de Ed25519 en crudo:
+     * 'raw' solo vale para publicas. Asi que hay que vestir los 32 bytes
+     * con el DER que si acepta. Los dos prefijos son iguales salvo el
+     * byte que dice de que curva es: 6e para X25519, 70 para Ed25519.
+     */
+    var DER_X25519  = '302e020100300506032b656e04220420';
+    var DER_ED25519 = '302e020100300506032b657004220420';
 
     function bytes(sz) {
         var arr = new Uint8Array(sz.length);
@@ -42,6 +65,14 @@ window.daeCrypto = (function () {
         return bytes(atob(String(sz).replace(/\s+/g, '')));
     }
 
+    function deHex(sz) {
+        var arr = new Uint8Array(sz.length / 2);
+        for (var i = 0; i < arr.length; i++) {
+            arr[i] = parseInt(sz.substr(i * 2, 2), 16);
+        }
+        return arr;
+    }
+
     function hex(arrBytes) {
         var sz = '';
         for (var i = 0; i < arrBytes.length; i++) {
@@ -50,10 +81,34 @@ window.daeCrypto = (function () {
         return sz;
     }
 
+    function unir(arrA, arrB) {
+        var arrOut = new Uint8Array(arrA.length + arrB.length);
+        arrOut.set(arrA, 0);
+        arrOut.set(arrB, arrA.length);
+        return arrOut;
+    }
+
     /** Is there a key loaded in this tab? */
     function lista() { return objClave !== null; }
 
     function duenyo() { return szQuien; }
+
+    /**
+     * Nuestra publica X25519, que WebCrypto no sabe sacar de la privada.
+     *
+     * Se calcula como esta definida: la privada por el punto base de la
+     * curva, que es el 9. Hace falta para reconstruir la sal del HKDF, y
+     * tiene que ser LA NUESTRA y no una que venga en el sobre: si
+     * viniera de fuera, el atacante elegiria el contexto de derivacion.
+     */
+    async function miPublica(objPriv) {
+        var arrBase = new Uint8Array(32);
+        arrBase[0] = 9;
+        var objBase = await crypto.subtle.importKey(
+            'raw', arrBase, { name: 'X25519' }, false, []);
+        return new Uint8Array(await crypto.subtle.deriveBits(
+            { name: 'X25519', public: objBase }, objPriv, 256));
+    }
 
     /**
      * Opens the .daekey and leaves the key ready for this tab.
@@ -69,7 +124,11 @@ window.daeCrypto = (function () {
             throw new Error('formato');
         }
 
-        if (!objSobre || objSobre.szFormato !== 'DAE-KEY-1') {
+        // Solo DAE-KEY-2. El 1 llevaba dentro un PKCS#8 de RSA y aqui ya
+        // no queda nada que sepa leer eso, asi que se rechaza de frente:
+        // decir "formato" es mas honesto que intentarlo y morir luego
+        // con un error que no explica nada.
+        if (!objSobre || objSobre.szFormato !== 'DAE-KEY-2') {
             throw new Error('formato');
         }
 
@@ -89,43 +148,82 @@ window.daeCrypto = (function () {
             false,
             ['decrypt']);
 
-        var arrPkcs8;
+        var arrCrudo;
         try {
-            arrPkcs8 = await crypto.subtle.decrypt(
+            arrCrudo = new Uint8Array(await crypto.subtle.decrypt(
                 { name: 'AES-GCM', iv: deB64(objSobre.szIv) },
                 objEnvoltura,
-                deB64(objSobre.szClave));
+                deB64(objSobre.szClave)));
         } catch (e) {
             // The GCM tag does not add up: that is not the password
             throw new Error('frase');
         }
 
-        // SHA-1 is not an oversight: it is what OpenSSL uses by default
-        // in RSA-OAEP, and it is what the messages were sealed with.
-        // Changing it here would make all the mail already received
-        // unreadable.
-        objClave = await crypto.subtle.importKey(
-            'pkcs8', arrPkcs8,
-            { name: 'RSA-OAEP', hash: 'SHA-1' },
-            false, ['decrypt']);
-
-        // The SAME key, imported again for signing. WebCrypto does not
-        // let a decryption key be used for signing, and it is right to:
-        // separating what each key is for prevents attacks where you
-        // make somebody sign something they thought they were decrypting.
+        // Dentro va un JSON con las dos privadas en hexadecimal, cada
+        // una con su nombre. Son dos llaves y no una convertida porque
+        // WebCrypto no sabe pasar de Ed25519 a X25519 --libsodium si-- y
+        // pedirselo al servidor seria depender de el justo en la
+        // operacion que se quiere sacar de ahi.
         //
-        // PKCS#1 v1.5 with SHA-256, which is what openssl_sign does on
-        // the server. If it did not match, the recipient would see
-        // "invalid signature" on a perfectly legitimate mail, which is
-        // scarier than not signing it.
+        // Van con nombre y no pegadas una detras de otra porque asi el
+        // sobre dice lo que lleva. Antes esto se resolvia mirando cuanto
+        // media el bulto, y adivinar el significado de una llave por su
+        // longitud es la clase de cosa que acierta hasta el dia que no.
+        var objDentro;
+        try {
+            objDentro = JSON.parse(new TextDecoder().decode(arrCrudo));
+        } catch (e) {
+            throw new Error('formato');
+        }
+
+        // La de cifrar son 32 bytes y la de firmar 64: la secreta de
+        // libsodium, que es semilla(32) seguida de la publica(32).
+        // Se comprueban las dos longitudes y que sea hexadecimal de
+        // verdad; deHex no protesta ante una letra rara, deja un NaN
+        // dentro del array y la llave saldria en silencio equivocada.
+        var szCurve = objDentro && objDentro.szPrivCurve;
+        var szSign  = objDentro && objDentro.szPrivSign;
+        var reHex   = /^[0-9a-fA-F]+$/;
+
+        if (typeof szCurve !== 'string' || typeof szSign !== 'string' ||
+            szCurve.length !== LEN_PRIV * 2 || szSign.length !== LEN_PRIV * 4 ||
+            !reHex.test(szCurve) || !reHex.test(szSign)) {
+            throw new Error('formato');
+        }
+
+        var arrCurve = deHex(szCurve);
+        var arrSign  = deHex(szSign);
+
+        try {
+            objClave = await crypto.subtle.importKey(
+                'pkcs8',
+                unir(deHex(DER_X25519), arrCurve),
+                { name: 'X25519' }, false, ['deriveBits']);
+            arrMiPub = await miPublica(objClave);
+        } catch (e) {
+            // Navegador sin curva. Se para aqui y se dice: seguir por
+            // otro camino seria ensenyar basura como si fuera el correo.
+            objClave = null;
+            arrMiPub = null;
+            throw new Error('sin_curva');
+        }
+
+        // La OTRA llave, importada aparte para firmar. WebCrypto no deja
+        // usar una llave de descifrado para firmar, y hace bien:
+        // separar para que sirve cada una evita los ataques en los que
+        // se hace firmar algo a quien creia estar descifrando.
+        //
+        // Del bloque de firma solo entra la primera mitad: WebCrypto
+        // quiere la semilla, y la publica que libsodium pega detras la
+        // sabe recalcular sola.
         try {
             objFirma = await crypto.subtle.importKey(
-                'pkcs8', arrPkcs8,
-                { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
-                false, ['sign']);
+                'pkcs8',
+                unir(deHex(DER_ED25519), arrSign.slice(0, LEN_PRIV)),
+                { name: 'Ed25519' }, false, ['sign']);
         } catch (e) {
-            // Not being able to sign does not stop you reading, which
-            // is what you came for. Carry on without signature, done.
+            // No poder firmar no impide leer, que es a lo que se venia.
+            // Se sigue sin firma y ya esta.
             objFirma = null;
         }
 
@@ -134,7 +232,12 @@ window.daeCrypto = (function () {
     }
 
     /** Forgets the key. Called on the way out. */
-    function olvidar() { objClave = null; objFirma = null; szQuien = ''; }
+    function olvidar() {
+        objClave = null;
+        objFirma = null;
+        arrMiPub = null;
+        szQuien  = '';
+    }
 
     /** True if the loaded key can also sign. */
     function puedeFirmar() { return objFirma !== null; }
@@ -149,7 +252,53 @@ window.daeCrypto = (function () {
     async function firmar(arrDatos) {
         if (!objFirma) { throw new Error('sin_clave_de_firma'); }
         return new Uint8Array(await crypto.subtle.sign(
-            { name: 'RSASSA-PKCS1-v1_5' }, objFirma, arrDatos));
+            { name: 'Ed25519' }, objFirma, arrDatos));
+    }
+
+    /**
+     * Abre un sobre de curva con nuestra privada.
+     *
+     * Devuelve null en cualquier fallo, y eso incluye "este sobre no era
+     * para mi": un mensaje puede ir sellado para varios y probar todas
+     * las entradas es lo normal, no un error que haya que contar.
+     *
+     * @param {Uint8Array} arrSobre  eph_pub(32) || nonce(12) || cif+tag
+     */
+    async function desenvolver(arrSobre) {
+        if (arrSobre.length <= LEN_PUB + LEN_NONCE + LEN_TAG) { return null; }
+
+        var arrEphPub = arrSobre.slice(0, LEN_PUB);
+        var arrNonce  = arrSobre.slice(LEN_PUB, LEN_PUB + LEN_NONCE);
+        var arrResto  = arrSobre.slice(LEN_PUB + LEN_NONCE);
+
+        try {
+            var objEph = await crypto.subtle.importKey(
+                'raw', arrEphPub, { name: 'X25519' }, false, []);
+
+            var arrCompartido = await crypto.subtle.deriveBits(
+                { name: 'X25519', public: objEph }, objClave, 256);
+
+            var objIkm = await crypto.subtle.importKey(
+                'raw', arrCompartido, 'HKDF', false, ['deriveBits']);
+
+            var arrKek = new Uint8Array(await crypto.subtle.deriveBits({
+                name: 'HKDF',
+                hash: 'SHA-256',
+                salt: unir(arrEphPub, arrMiPub),
+                info: new TextEncoder().encode(INFO_KEK)
+            }, objIkm, 256));
+
+            var objKek = await crypto.subtle.importKey(
+                'raw', arrKek, { name: 'AES-GCM' }, false, ['decrypt']);
+
+            // El tag ya viene pegado al final, que es como lo quiere
+            // WebCrypto. No hay nada que recolocar.
+            return new Uint8Array(await crypto.subtle.decrypt(
+                { name: 'AES-GCM', iv: arrNonce, tagLength: 128 },
+                objKek, arrResto));
+        } catch (e) {
+            return null;
+        }
     }
 
     /**
@@ -168,6 +317,11 @@ window.daeCrypto = (function () {
             throw new Error('cabecera');
         }
 
+        // Una version que no sea DAE-3 no se intenta. Antes habia dos
+        // ramas mas y ya no existen; adivinar el formato seria sacar una
+        // llave equivocada y llamarlo "alterado".
+        if (objHead.szVersion !== 'DAE-3') { throw new Error('cabecera'); }
+
         // Every entry gets tried: a message can go sealed for several
         // recipients and only one of them is ours. The rest failing is
         // the normal thing.
@@ -175,11 +329,8 @@ window.daeCrypto = (function () {
         var arrEnc = objHead.arrEncKeys || {};
         for (var szHuella in arrEnc) {
             if (!Object.prototype.hasOwnProperty.call(arrEnc, szHuella)) { continue; }
-            try {
-                var arrCrudo = new Uint8Array(await crypto.subtle.decrypt(
-                    { name: 'RSA-OAEP' }, objClave, deB64(arrEnc[szHuella])));
-                if (arrCrudo.length === 64) { arrAbierta = arrCrudo; break; }
-            } catch (e) { /* it was not ours */ }
+            var arrCrudo = await desenvolver(deB64(arrEnc[szHuella]));
+            if (arrCrudo && arrCrudo.length === 64) { arrAbierta = arrCrudo; break; }
         }
 
         if (!arrAbierta) { throw new Error('no_es_para_ti'); }
@@ -201,26 +352,21 @@ window.daeCrypto = (function () {
         arrCifrado.set(arrPayload, 0);
         arrCifrado.set(arrBody, arrPayload.length);
 
-        // ALL-OR-NOTHING TRANSFORM (DAE-2). The key that came in the
-        // header is not the key: it comes masked with the digest of the
-        // WHOLE ciphertext. Here the mask is taken off, and it can only
-        // be done because both pieces are already here. If one byte
-        // were missing another key would come out and the decrypt below
-        // would fail, without letting one chunk of the message be read.
-        //
-        // DAE-1 did not carry it and its key goes as is: there is old
-        // mail delivered in that format and it still opens.
-        if (objHead.szVersion === 'DAE-2') {
-            var arrEtiqueta = new TextEncoder().encode('DAE-AONT-v2');
-            var arrParaHash = new Uint8Array(arrEtiqueta.length + arrCifrado.length);
-            arrParaHash.set(arrEtiqueta, 0);
-            arrParaHash.set(arrCifrado, arrEtiqueta.length);
+        // ALL-OR-NOTHING TRANSFORM. The key that came in the header is
+        // not the key: it comes masked with the digest of the WHOLE
+        // ciphertext. Here the mask is taken off, and it can only be
+        // done because both pieces are already here. If one byte were
+        // missing another key would come out and the decrypt below would
+        // fail, without letting one chunk of the message be read.
+        var arrEtiqueta = new TextEncoder().encode('DAE-AONT-v2');
+        var arrParaHash = new Uint8Array(arrEtiqueta.length + arrCifrado.length);
+        arrParaHash.set(arrEtiqueta, 0);
+        arrParaHash.set(arrCifrado, arrEtiqueta.length);
 
-            var arrMascara = new Uint8Array(
-                await crypto.subtle.digest('SHA-256', arrParaHash));
-            for (var i = 0; i < arrClaveAes.length; i++) {
-                arrClaveAes[i] ^= arrMascara[i];
-            }
+        var arrMascara = new Uint8Array(
+            await crypto.subtle.digest('SHA-256', arrParaHash));
+        for (var i = 0; i < arrClaveAes.length; i++) {
+            arrClaveAes[i] ^= arrMascara[i];
         }
 
         // And now the tag stuck at the end, the way WebCrypto expects.

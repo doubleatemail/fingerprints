@@ -2,13 +2,13 @@
 """
 dae_open.py - Opens a puzzle email on YOUR computer.
 
-    python dae_open.py mensaje.ehead --clave mi_clave.pem
+    python dae_open.py mensaje.ehead --clave mi_clave.txt
 
 The program pulls out of your header where the other piece is, downloads
 it and writes the email. If you already have it downloaded, hand it over
 and it will not connect anywhere:
 
-    python dae_open.py mensaje.ehead mensaje.ebody --clave mi_clave.pem
+    python dae_open.py mensaje.ehead mensaje.ebody --clave mi_clave.txt
 
 It joins the two pieces and writes an ordinary .eml file, which you can
 open with Thunderbird, Outlook, Apple Mail or any other program.
@@ -28,6 +28,15 @@ pieces and your key, and ten years from now that email will still
 open. That is what turns the '@@' protocol into something that does
 not depend on us.
 
+YOUR KEY FILE
+-------------
+A text file holding 64 hexadecimal characters and nothing else: the 32
+raw bytes of your X25519 private key. That is exactly what the webmail
+writes when you export it. There is no PEM wrapper and no password,
+because there is a single algorithm and a single length here and an
+envelope would only make the file harder to check by eye. Guard it the
+way you guard a house key.
+
 WHAT YOU NEED
 -------------
     pip install cryptography
@@ -36,21 +45,43 @@ FORMAT (for anyone who wants to write their own version)
 --------------------------------------------------------
 The eHead is a JSON:
 
-    szVersion    "DAE-2"  (or "DAE-1", the old format)
-    szAlgo       "A256GCM+RSA-OAEP+AONT"
+    szVersion    "DAE-3"
+    szAlgo       "A256GCM+X25519+AONT"
     szIv         12 bytes in base64
     szTag        16 bytes in base64, the GCM tag
     nBlockSize   size of the complete ciphertext
     nHeadSize    how many bytes of that ciphertext go in the eHead
-    arrEncKeys   pubkey fingerprint -> base64 of RSA-OAEP(key||locator)
+    arrEncKeys   key fingerprint -> base64 of the sealed envelope
     szPayload    base64 of the first nHeadSize bytes of the ciphertext
 
 The complete ciphertext is szPayload + the eBody file, in that order.
 
+Every arrEncKeys entry is the base64 of
+
+    eph_pub(32) || nonce(12) || AES-256-GCM ciphertext and tag
+
+and it is opened like this, which is ECIES out of a textbook:
+
+    compartido = X25519(tu_privada, eph_pub)
+    kek        = HKDF-SHA256(compartido,
+                             salt = eph_pub || tu_publica,
+                             info = "DAE-3-KEK", 32 bytes)
+    sobre      = AES-256-GCM-open(kek, nonce, resto)
+               = clave_enmascarada(32) || localizador(32)
+
+The salt carries BOTH public keys. Without that, the same shared
+secret would give the same key in different contexts, which is how
+pieces of one message get replayed into another.
+
+The fingerprint that indexes each entry is the sha256 of the raw 32
+bytes of the public key. It is only a hint: every entry is tried until
+one opens, and the ones that fail are the normal case, because a
+message can be sealed for several people at once.
+
 THE IMPORTANT PART, AND IT IS THE POINT OF THE PROTOCOL
 ------------------------------------------------------
-In DAE-2 the 32-byte key that comes out of arrEncKeys is NOT the key:
-it comes masked. The real key is obtained like this:
+The 32 bytes that come out of that envelope are NOT the key: the key
+comes masked. The real one is obtained like this:
 
     mascara = sha256(b"DAE-AONT-v2" + cifrado_completo)
     clave   = clave_enmascarada XOR mascara
@@ -63,18 +94,14 @@ not exist cannot be computed. It is called an all-or-nothing transform,
 and it is the reason why intercepting one of the two pieces is
 absolutely useless.
 
-DAE-1, the old format, did not carry it: its key travelled as it was
-and its header included szChecksum, the sha256 of the complete
-ciphertext. It is still opened so as not to leave already delivered
-mail unread, but with DAE-1 whoever intercepted the eHead and got the
-key could read that fragment of the message. That is why it changed.
+There is no checksum in the header, and that absence is deliberate:
+the digest of the complete ciphertext is exactly the value that takes
+the mask off, so publishing it in the piece that travels by mail would
+have reduced all of this to nothing. Integrity is the GCM tag's job,
+and the tag covers the whole message.
 
-Decryption: AES-256-GCM. The arrEncKeys entries are opened with your
-private key (RSA-OAEP with SHA-1, which is what OpenSSL uses by
-default).
-
-The next 32 bytes of that same entry are the eBody locator. They go
-there, encrypted, so that nobody knows where the other piece is
+The other 32 bytes of that same envelope are the eBody locator. They
+go there, encrypted, so that nobody knows where the second piece is
 without having your private key.
 
 License: public domain. Copy it, change it, publish it.
@@ -84,53 +111,63 @@ import argparse
 import base64
 import urllib.request
 import urllib.error
-import getpass
 import hashlib
 import json
 import sys
 
 try:
     from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import padding
+    from cryptography.hazmat.primitives.asymmetric import x25519
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 except ImportError:
     sys.exit("Falta la biblioteca 'cryptography'. Instalala con:\n\n"
              "    pip install cryptography\n")
 
 SERVIDOR_POR_DEFECTO = "https://doubleat.email"
 AGENTE = "dae_open.py/1.0 (+https://doubleat.email)"
-VERSION_ACTUAL = "DAE-2"
-VERSIONES_VALIDAS = ("DAE-2", "DAE-1")
+VERSION = "DAE-3"
 
 # Domain label of the all-or-nothing mask. It goes inside the digest
 # so that value is good for nothing else in the protocol.
 ETIQUETA_AONT = b"DAE-AONT-v2"
+
+# Label of the HKDF. Ties the derived key to THIS use: if anything
+# else is ever derived from the same shared secret it will not come
+# out the same, and the two cannot be confused.
+INFO_KEK = b"DAE-3-KEK"
+
 LONGITUD_CLAVE = 32          # AES-256
 LONGITUD_LOCALIZADOR = 32
+LONGITUD_PUB = 32            # X25519, public and private are both 32
+LONGITUD_NONCE = 12
+LONGITUD_TAG = 16
 
 
 def aviso(texto):
     print(texto, file=sys.stderr)
 
 
-def cargar_clave_privada(ruta, contrasena):
-    """Reads the private key. If protected and no password, it asks."""
-    with open(ruta, "rb") as f:
-        datos = f.read()
-
-    protegida = b"ENCRYPTED" in datos.split(b"\n")[0] or b"ENCRYPTED" in datos[:200]
-
-    if protegida and contrasena is None:
-        contrasena = getpass.getpass("Contrasena de tu clave privada: ")
+def cargar_clave_privada(ruta):
+    """Reads your X25519 private key: 64 hex characters, raw bytes."""
+    try:
+        with open(ruta, "r", encoding="utf-8") as f:
+            texto = "".join(f.read().split())
+    except OSError as e:
+        sys.exit("No se ha podido leer el fichero de la clave: %s" % e)
 
     try:
-        return serialization.load_pem_private_key(
-            datos,
-            password=contrasena.encode() if contrasena else None,
-        )
-    except (ValueError, TypeError) as e:
-        sys.exit("No se ha podido leer la clave privada: %s\n"
-                 "Comprueba que es el fichero correcto y la contrasena." % e)
+        crudo = bytes.fromhex(texto)
+    except ValueError:
+        crudo = b""
+
+    if len(crudo) != LONGITUD_PUB:
+        sys.exit("Eso no es una clave privada X25519.\n"
+                 "Tiene que ser un fichero de texto con 64 caracteres\n"
+                 "hexadecimales, que es como te la escribe el webmail\n"
+                 "cuando la exportas.")
+
+    return x25519.X25519PrivateKey.from_private_bytes(crudo)
 
 
 def abrir_entrada(clave_privada, entradas):
@@ -140,16 +177,42 @@ def abrir_entrada(clave_privada, entradas):
     The rest failing is the normal thing: an email can be sealed for
     several recipients and only one entry is yours.
     """
+    # Our own public key goes in the HKDF salt, and it is recomputed
+    # here instead of read from the envelope: a salt supplied by
+    # whoever sealed the message would let them pick the derivation
+    # context.
+    publica = clave_privada.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw)
+
+    minimo = LONGITUD_PUB + LONGITUD_NONCE + LONGITUD_TAG
+
     for huella, sellado in entradas.items():
         try:
-            crudo = clave_privada.decrypt(
-                base64.b64decode(sellado),
-                padding.OAEP(
-                    mgf=padding.MGF1(algorithm=hashes.SHA1()),
-                    algorithm=hashes.SHA1(),
-                    label=None,
-                ),
-            )
+            sobre = base64.b64decode(sellado)
+        except Exception:
+            continue
+
+        if len(sobre) <= minimo:
+            continue
+
+        eph_pub = sobre[:LONGITUD_PUB]
+        nonce = sobre[LONGITUD_PUB:LONGITUD_PUB + LONGITUD_NONCE]
+        resto = sobre[LONGITUD_PUB + LONGITUD_NONCE:]
+
+        try:
+            # exchange() refuses an all-zero shared secret, which is
+            # what a low-order ephemeral would produce: a point chosen
+            # so the result is predictable. Landing here is not worth
+            # a message, it is just one more entry that is not ours.
+            compartido = clave_privada.exchange(
+                x25519.X25519PublicKey.from_public_bytes(eph_pub))
+
+            kek = HKDF(algorithm=hashes.SHA256(), length=32,
+                       salt=eph_pub + publica,
+                       info=INFO_KEK).derive(compartido)
+
+            crudo = AESGCM(kek).decrypt(nonce, resto, None)
         except Exception:
             continue
 
@@ -202,9 +265,9 @@ def main():
     p.add_argument("ebody", nargs="?", default=None,
                    help="la otra pieza, si ya la tienes bajada. Si no se pone, "
                         "se descarga sola")
-    p.add_argument("--clave", "-k", required=True, help="tu clave privada, en PEM")
-    p.add_argument("--contrasena", "-p", default=None,
-                   help="contrasena de la clave privada (si no, se pide al vuelo)")
+    p.add_argument("--clave", "-k", required=True,
+                   help="tu clave privada X25519: un fichero de texto con "
+                        "64 caracteres hexadecimales")
     p.add_argument("--salida", "-o", default=None, help="fichero .eml a escribir")
     p.add_argument("--servidor", "-s", default=SERVIDOR_POR_DEFECTO,
                    help="de donde bajar la segunda pieza (por defecto %s)"
@@ -221,17 +284,16 @@ def main():
     except (OSError, ValueError) as e:
         sys.exit("No se ha podido leer la cabecera: %s" % e)
 
-    if cabecera.get("szVersion") not in VERSIONES_VALIDAS:
-        # VERSION_ESPERADA no existe: quedo colgando al anyadir DAE-2, y
-        # esta rama reventaba con un traceback en lugar de avisar. Solo
-        # se llega aqui con un formato desconocido, que es justo cuando
-        # mas falta hace entender el mensaje.
-        aviso("AVISO: la cabecera dice version '%s' y aqui se entienden "
-              "'%s'. Se sigue de todas formas."
-              % (cabecera.get("szVersion"), "', '".join(VERSIONES_VALIDAS)))
+    if cabecera.get("szVersion") != VERSION:
+        # Only an unknown format gets here, which is exactly when
+        # understanding the message matters most. It is a warning and
+        # not an exit because the attempt costs nothing.
+        aviso("AVISO: la cabecera dice version '%s' y aqui solo se "
+              "entiende '%s'. Se sigue de todas formas."
+              % (cabecera.get("szVersion"), VERSION))
 
     # --- your key opens the entry that is yours ----------------------
-    clave_privada = cargar_clave_privada(args.clave, args.contrasena)
+    clave_privada = cargar_clave_privada(args.clave)
     clave_aes, localizador, huella = abrir_entrada(
         clave_privada, cabecera.get("arrEncKeys", {}))
 
@@ -266,23 +328,15 @@ def main():
         aviso("AVISO: el mensaje deberia medir %s bytes y mide %d. "
               "Puede que falte parte del eBody." % (esperado, len(cifrado)))
 
-    # DAE-1 carried the digest in the header. For that format it is no
-    # secret any more, so it is checked and that is that.
-    checksum = cabecera.get("szChecksum")
-    if checksum and hashlib.sha256(cifrado).hexdigest() != checksum:
-        aviso("AVISO: la huella del mensaje no cuadra. Sigue el intento, "
-              "pero algo se ha alterado o esta incompleto.")
-
-    # --- remove the mask (DAE-2) --------------------------------------
+    # --- remove the mask ----------------------------------------------
     # This is where the protocol delivers what it promises. The key
     # that came in the header is good for nothing on its own: it has
     # to be undone with the digest of the complete ciphertext, and for
     # that both whole pieces are needed. If a single byte is missing a
     # different key comes out, the decryption below fails, and nothing
     # is read.
-    if cabecera.get("szVersion") == VERSION_ACTUAL:
-        mascara = hashlib.sha256(ETIQUETA_AONT + cifrado).digest()
-        clave_aes = bytes(a ^ b for a, b in zip(clave_aes, mascara))
+    mascara = hashlib.sha256(ETIQUETA_AONT + cifrado).digest()
+    clave_aes = bytes(a ^ b for a, b in zip(clave_aes, mascara))
 
     # --- decrypt -----------------------------------------------------
     iv = base64.b64decode(cabecera["szIv"])
