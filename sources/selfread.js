@@ -40,7 +40,14 @@
             pieza_no_esta: elCaja.dataset.errSinPieza,
             pieza_error:   elCaja.dataset.errSinPieza,
             sin_clave:     elCaja.dataset.errSinClave,
-            cabecera:      elCaja.dataset.errFormato
+            cabecera:      elCaja.dataset.errFormato,
+            // El origen sellado no es un dominio al que se pueda
+            // preguntar. Es cabecera mal formada desde el punto de vista
+            // de quien lee, y ademas es el sintoma de que alguien ha
+            // intentado usar este mensaje para hacernos llamar a un
+            // sitio suyo. Se cuenta como formato, no como "falta la
+            // pieza": la pieza no falta, es que no se va a ir a buscar.
+            origen_malo:   elCaja.dataset.errFormato
         };
         return arr[szCodigo] || elCaja.dataset.errGenerico;
     }

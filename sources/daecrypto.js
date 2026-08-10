@@ -14,17 +14,18 @@
  *      it does not implement PBES2. That is why the usual .pem is no
  *      good.
  *   2. With that key it opens one arrEncKeys entry of the eHead and
- *      takes out two things: the AES key of the message and the locator
- *      of the other piece.
- *   3. Asks for that piece at /ebody/<locator>. The server does not get
- *      who is asking nor which message it is about: it cannot know.
+ *      takes out three things: the AES key of the message, the locator
+ *      of the other piece, and the server where that piece lives.
+ *   3. Asks for that piece at https://<origen>/ebody/<locator>. The
+ *      server does not get who is asking nor which message it is about:
+ *      it cannot know.
  *   4. Puts the two together, decrypts with AES-256-GCM, checks the tag.
  *
- * Solo se abre DAE-4. DAE-1 y DAE-2, con RSA, se borraron el
- * 2026-08-10: no habia un solo correo real en esos formatos, y cargar
- * para siempre con tres caminos de descifrado para nadie era pagar por
- * nada. Ver clsEBlock.php y 06_AT_AT_PROTOCOL.md, secciones 3.ter y
- * 3.quater.
+ * Solo se abre DAE-5. Los formatos anteriores se borraron enteros el
+ * 2026-08-10: no habia un solo correo real en ellos, y cargar para
+ * siempre con varios caminos de descifrado para nadie era pagar por
+ * nada. Ver clsEBlock.php y 06_AT_AT_PROTOCOL.md, secciones 3.ter,
+ * 3.quater y 3.quinquies.
  *
  * The decrypted key lives in memory and only while the tab lasts. It is
  * not saved in localStorage nor in a cookie on purpose: what is not
@@ -40,7 +41,7 @@ window.daeCrypto = (function () {
     var szQuien  = '';
 
     // Sigue diciendo DAE-3 y NO es un despiste: la etiqueta ata la
-    // derivacion al sobre de curva, que en DAE-4 no ha cambiado. Tocarla
+    // derivacion al sobre de curva, que en DAE-5 no ha cambiado. Tocarla
     // dejaria ilegible todo el correo ya enviado a cambio de nada.
     var INFO_KEK  = 'DAE-3-KEK';
     var LEN_PRIV  = 32;
@@ -58,6 +59,10 @@ window.daeCrypto = (function () {
     // hasta que la maten.
     var PIN_ITER_MIN = 1;
     var PIN_ITER_MAX = 10000000;
+
+    // Maximo de un nombre de dominio, RFC 1035. El sobre lo trae con su
+    // longitud delante, en un byte, que es justo lo que cabe.
+    var ORIGEN_MAX = 253;
 
     /**
      * Envoltura PKCS#8 minima para una privada de curva.
@@ -101,6 +106,43 @@ window.daeCrypto = (function () {
         arrOut.set(arrA, 0);
         arrOut.set(arrB, arrA.length);
         return arrOut;
+    }
+
+    /**
+     * A ese nombre se le puede pedir la otra pieza?
+     *
+     * MISMA REGLA que clsKeyFetch::dominioValido() en el servidor, y
+     * repetida aqui porque este fichero se carga solo en la pagina de
+     * leer, sin daeseal.js: hacerlos depender el uno del otro dejaria
+     * media aplicacion sin validar.
+     *
+     * ESTO NO ES COSMETICA. El origen sale de un sobre que ha sellado
+     * OTRA PERSONA. Que venga cifrado demuestra que nadie lo ha tocado
+     * por el camino, no que quien lo escribio sea de fiar. Abrir un
+     * mensaje no puede convertirse en la manera de que el navegador de
+     * quien lee pida una URL elegida por quien escribe: sin este filtro,
+     * mandar un correo bastaria para que la pestanya de la victima
+     * llamara a "localhost" o a una direccion de su red interna. Se
+     * exige nombre de dominio publico, sin IP, sin puerto, sin ruta y
+     * sin los TLD reservados que por definicion no son de nadie.
+     */
+    function dominioValido(szDominio) {
+        szDominio = String(szDominio || '').trim().toLowerCase();
+
+        if (szDominio === '' || szDominio.length > ORIGEN_MAX) { return false; }
+
+        if (!/^[a-z0-9]([a-z0-9\-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9\-]*[a-z0-9])?)+$/
+                .test(szDominio)) {
+            return false;
+        }
+
+        if (/^[0-9.]+$/.test(szDominio)) { return false; }
+
+        var arrProhibidos = ['test', 'invalid', 'example', 'local',
+                             'localhost', 'internal', 'home', 'lan'];
+        var szTld = szDominio.split('.').pop();
+
+        return arrProhibidos.indexOf(szTld) < 0;
     }
 
     /** Is there a key loaded in this tab? */
@@ -353,8 +395,13 @@ window.daeCrypto = (function () {
      * proposito: las dos cosas dan otra clave y mueren en la etiqueta
      * GCM. Quien llame decide como lo cuenta.
      *
+     * szBase ya NO decide de donde se baja la segunda pieza: eso lo dice
+     * el propio mensaje desde DAE-5. Se queda como forzado para los
+     * tests y para quien tenga un servidor de pruebas, y cuando va vacio
+     * -que es siempre en la aplicacion- manda el origen sellado.
+     *
      * @param {string} szHead  the eHead, just as it arrived (JSON)
-     * @param {string} szBase  where to download the second piece from
+     * @param {string} szBase  forzado para pruebas; vacio en produccion
      * @param {string} [szPin] el segundo canal, si el correo lo lleva
      */
     async function abrir(szHead, szBase, szPin) {
@@ -371,10 +418,10 @@ window.daeCrypto = (function () {
             throw new Error('cabecera');
         }
 
-        // Una version que no sea DAE-4 no se intenta. Antes habia tres
+        // Una version que no sea DAE-5 no se intenta. Antes habia cuatro
         // ramas mas y ya no existen; adivinar el formato seria sacar una
         // llave equivocada y llamarlo "alterado".
-        if (objHead.szVersion !== 'DAE-4') { throw new Error('cabecera'); }
+        if (objHead.szVersion !== 'DAE-5') { throw new Error('cabecera'); }
 
         // Las iteraciones se leen de la cabecera y NUNCA de una
         // constante: un correo sellado antes de subirlas tiene que
@@ -389,12 +436,21 @@ window.daeCrypto = (function () {
         // Every entry gets tried: a message can go sealed for several
         // recipients and only one of them is ours. The rest failing is
         // the normal thing.
+        // El sobre ya NO mide 64 bytes fijos: detras del localizador va
+        // la longitud del origen en un byte y el origen. El minimo son
+        // 65 y el byte de longitud tiene que cuadrar con lo que queda; un
+        // sobre que no cuadre consigo mismo no se interpreta "lo mejor
+        // posible", se descarta como si no fuera nuestro.
         var arrAbierta = null;
         var arrEnc = objHead.arrEncKeys || {};
         for (var szHuella in arrEnc) {
             if (!Object.prototype.hasOwnProperty.call(arrEnc, szHuella)) { continue; }
             var arrCrudo = await desenvolver(deB64(arrEnc[szHuella]));
-            if (arrCrudo && arrCrudo.length === 64) { arrAbierta = arrCrudo; break; }
+            if (arrCrudo && arrCrudo.length > 65
+                && arrCrudo.length === 65 + arrCrudo[64]) {
+                arrAbierta = arrCrudo;
+                break;
+            }
         }
 
         if (!arrAbierta) { throw new Error('no_es_para_ti'); }
@@ -406,11 +462,27 @@ window.daeCrypto = (function () {
         // separan aqui para que nadie enchufe el texto donde va el
         // binario, que es el fallo que rompe la interoperabilidad sin
         // dar la cara.
-        var arrLocaliza = arrAbierta.slice(32);
+        var arrLocaliza = arrAbierta.slice(32, 64);
         var szLocaliza  = hex(arrLocaliza);
 
+        // Y el tercer campo: en que servidor vive la otra mitad. Sin
+        // esto, un mensaje de otro dominio se buscaba aqui y no aparecia
+        // nunca.
+        var szOrigen = new TextDecoder().decode(arrAbierta.slice(65))
+                           .trim().toLowerCase();
+
+        // La direccion a la que se va a llamar la ha escrito quien
+        // envio el correo. Ver dominioValido(): abrir un mensaje no
+        // puede ser la manera de que esta pestanya pida una URL elegida
+        // por otro.
+        var szDonde = String(szBase || '');
+        if (szDonde === '') {
+            if (!dominioValido(szOrigen)) { throw new Error('origen_malo'); }
+            szDonde = 'https://' + szOrigen;
+        }
+
         // The second piece. The locator IS the credential.
-        var objResp = await fetch(szBase + '/ebody/' + szLocaliza, { credentials: 'omit' });
+        var objResp = await fetch(szDonde + '/ebody/' + szLocaliza, { credentials: 'omit' });
         if (!objResp.ok) {
             throw new Error(objResp.status === 404 ? 'pieza_no_esta' : 'pieza_error');
         }
@@ -475,6 +547,9 @@ window.daeCrypto = (function () {
         firmar:      firmar,
         puedeFirmar: puedeFirmar,
         abrir:    abrir,
+        // Se saca para los tests: tiene que decir exactamente lo mismo
+        // que clsKeyFetch::dominioValido() en el servidor.
+        dominioValido: dominioValido,
         lista:    lista,
         duenyo:   duenyo,
         olvidar:  olvidar

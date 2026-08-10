@@ -78,7 +78,8 @@ WHAT IT DOES INSIDE, IN ORDER
  2. Signs it with Ed25519, if you give it your secret key. The
     signature goes INSIDE what is encrypted: outside it would announce
     to whoever intercepts who is writing.
- 3. Looks up each recipient's public key in the directory.
+ 3. Looks up each recipient's public key in THEIR OWN directory, at
+    their own domain. Not ours: their key is not ours to serve.
  4. Encrypts everything with AES-256-GCM, with a new key for this
     message.
  5. ALL-OR-NOTHING TRANSFORM: masks that key with the digest of the
@@ -87,6 +88,12 @@ WHAT IT DOES INSIDE, IN ORDER
     neither with time, nor with the recipient's private key.
  6. Masks it a second time with the PIN, derived slowly. Missing
     either mask, a different key comes out and nothing decrypts.
+ 6.bis Seals, along with the key and the locator, the DOMAIN where the
+    second piece is going to live. Without it the recipient knows which
+    piece to ask for and not whom to ask, and mail between two servers
+    simply does not work. It goes inside the envelope and never in the
+    header: whoever intercepts the carrier mail must not learn which
+    door to knock on for the other half.
  7. Splits the result: 10 % goes in the eHead and the rest in the
     eBody.
  8. Delivers the two pieces. The server distributes without opening
@@ -122,11 +129,24 @@ except ImportError:
 
 AGENTE = "dae_send.py/1.0 (+https://doubleat.email)"
 
-VERSION       = "DAE-4"
-ALGO          = "A256GCM+X25519+AONT+PIN"
+VERSION       = "DAE-5"
+ALGO          = "A256GCM+X25519+AONT+PIN+ORIGIN"
 ETIQUETA_AONT = b"DAE-AONT-v2"
 MAX_HEAD      = 102400      # 100 KB
 RATIO_HEAD    = 0.10        # 10 %
+
+# Longest a domain name can be, RFC 1035. The envelope carries the
+# origin with its length in front, in one byte, which is exactly what
+# fits.
+ORIGEN_MAX = 253
+
+# Names that belong to nobody by definition (RFC 2606 and RFC 6761) or
+# that point at the machine itself. The other implementations refuse
+# them too, and they have to refuse the same ones: a mail sealed with an
+# origin that one accepts and another rejects is a mail that opens in
+# one place and not in the next.
+TLD_PROHIBIDOS = ("test", "invalid", "example", "local",
+                  "localhost", "internal", "home", "lan")
 
 # The PIN when there is no second channel. Public on purpose: see the
 # note at the top of the file. It buys a single encryption path, not
@@ -184,6 +204,72 @@ def zbase32(datos):
     return salida
 
 
+def dominio_de(direccion):
+    """The domain of an address, lowercased, or an empty string.
+
+    The double at sign is normalised first: addresses are written
+    'luis@@otro.email' and what is wanted is 'otro.email'.
+    """
+    texto = str(direccion or "").strip().lower().replace("@@", "@")
+    corte = texto.rfind("@")
+    if corte < 0 or corte == len(texto) - 1:
+        return ""
+    return texto[corte + 1:]
+
+
+def dominio_de_url(url):
+    """The host of a server address, without scheme, port or path.
+
+    --servidor is written as 'https://doubleat.email', and what has to
+    be sealed as the origin is the bare name: the port and the path are
+    fixed by the specification, and letting them travel would be letting
+    whoever seals choose the URL that the recipient's machine calls.
+    """
+    texto = str(url or "").strip().lower()
+    if "//" in texto:
+        texto = texto.split("//", 1)[1]
+    texto = texto.split("/", 1)[0]
+    if "@" in texto:                       # user:pass@host
+        texto = texto.rsplit("@", 1)[1]
+    return texto.split(":", 1)[0]
+
+
+def dominio_valido(dominio):
+    """Can that name be asked for a key, or for the second piece?
+
+    THE SAME RULE as clsKeyFetch::dominioValido() on the server, and it
+    has to stay the same: a public domain name with its dot, no IP
+    literal, no port, no path, no brackets and none of the reserved
+    TLDs. When sealing, this catches a mistyped server before producing
+    mail nobody can open; when opening, dae_open.py uses it for
+    something more serious and says so there.
+    """
+    dominio = str(dominio or "").strip().lower()
+
+    if not dominio or len(dominio) > ORIGEN_MAX:
+        return False
+
+    etiquetas = dominio.split(".")
+    if len(etiquetas) < 2:
+        return False
+
+    for etiqueta in etiquetas:
+        if not etiqueta or len(etiqueta) > 63:
+            return False
+        if etiqueta[0] == "-" or etiqueta[-1] == "-":
+            return False
+        if any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-" for c in etiqueta):
+            return False
+
+    # An IPv4 address would pass the test above. It does not do: the
+    # piece is not asked of a number, it is asked of a name, which is
+    # the only thing a certificate can vouch for.
+    if all(c in "0123456789." for c in dominio):
+        return False
+
+    return etiquetas[-1] not in TLD_PROHIBIDOS
+
+
 def hu(direccion):
     """The identifier of an address in the directory.
 
@@ -222,8 +308,25 @@ def leer_clave_publica(texto):
     return None
 
 
-def clave_publica_de(servidor, direccion):
-    url = "%s/.well-known/dae/hu/%s" % (servidor.rstrip("/"), hu(direccion))
+def clave_publica_de(direccion):
+    """Asks THAT PERSON'S directory for their key, not our own.
+
+    This used to ask the server in --servidor whoever the recipient was,
+    so writing to somebody on another server answered "no key published"
+    even when their key was right there: we were asking the one place
+    that does not have it. It is the same bug clsKeyFetch fixed on the
+    server side.
+
+    Always https, written out by hand. A key fetched over a channel that
+    cannot be verified is a key that could be anybody's, and the mail
+    would be sealed for them.
+    """
+    dominio = dominio_de(direccion)
+    if not dominio_valido(dominio):
+        sys.exit("'%s' no tiene un dominio al que se le pueda pedir la clave."
+                 % direccion)
+
+    url = "https://%s/.well-known/dae/hu/%s" % (dominio, hu(direccion))
     peticion = urllib.request.Request(url, headers={"User-Agent": AGENTE})
     try:
         with urllib.request.urlopen(peticion, timeout=30) as resp:
@@ -389,7 +492,38 @@ def mascara_pin(pin, sal, iteraciones):
                                iteraciones, 32)
 
 
-def sellar(claro, publicas, pin=PIN_DEFECTO):
+def sellar(claro, publicas, pin, origen):
+    """Seals a message. origen is where the eBody is going to live.
+
+    THE ORIGIN IS NOT OPTIONAL and has no default. Until DAE-4 the
+    envelope said WHICH piece to fetch and never WHERE it lives, so
+    whoever received mail from another server looked for the second half
+    in their own storage, where it had never been, and got "the second
+    half is no longer available" forever. Cross-server puzzle mail was
+    impossible, and nobody noticed for two months because there was only
+    one server to test with.
+
+    It travels INSIDE the envelope, not in the header. The eHead is a
+    file that gets forwarded, saved and copied: on its own it must not
+    be a map to the other half. Whoever intercepts the carrier mail
+    would otherwise know which door to knock on.
+
+    Layout, and it has to be byte for byte what the other four
+    implementations do:
+
+        k'(32) || locator(32) || nLen(1) || origin(nLen)
+
+    A length byte in front rather than a separator: a separator forces a
+    decision about what happens when it appears inside the data, and
+    that decision is exactly where five implementations start reading
+    different things. One byte is enough because a domain name stops at
+    253 and a byte holds 255.
+    """
+    if not dominio_valido(origen):
+        sys.exit("'%s' no sirve como origen de la segunda pieza.\n"
+                 "Tiene que ser el nombre de dominio del servidor al que\n"
+                 "se entrega, sin http:// delante y sin puerto." % origen)
+
     clave = secrets.token_bytes(32)
     iv    = secrets.token_bytes(12)
 
@@ -419,12 +553,16 @@ def sellar(claro, publicas, pin=PIN_DEFECTO):
     clave_out = bytes(a ^ b for a, b in
                       zip(clave_out, mascara_pin(pin, body_id, n_iter)))
 
-    semilla  = clave_out + body_id
+    # No longer a fixed 64 bytes: the origin is variable length and
+    # carries its own length in front. Anywhere that still assumes 64
+    # reads the envelope wrong.
+    origen_b = origen.encode("ascii")
+    semilla  = clave_out + body_id + bytes([len(origen_b)]) + origen_b
 
-    # One curve envelope per recipient. Each carries the MASKED key
-    # and the locator: the locator whole, because you have to know
-    # which piece to ask for before you have it; the key not until
-    # everything is in hand.
+    # One curve envelope per recipient. Each carries the MASKED key,
+    # the locator and the origin: those two whole, because you have to
+    # know which piece to ask for and whom to ask before you have it;
+    # the key not until everything is in hand.
     enc_keys = {}
     for publica in publicas:
         sellada = envolver(semilla, publica)
@@ -541,6 +679,11 @@ def main():
     p.add_argument("--retencion", choices=["permanent", "expiring", "ephemeral"],
                    help="cuanto vive la segunda pieza; por defecto, tu preferencia")
     p.add_argument("--servidor", default="https://doubleat.email")
+    p.add_argument("--origen", metavar="DOMINIO",
+                   help="dominio que se sella como sitio de la segunda "
+                        "pieza. Por defecto, el de --servidor, que es "
+                        "quien se la queda. Solo hace falta cambiarlo si "
+                        "se entrega por un nombre y se sirve por otro")
     p.add_argument("--contrasena", help="la de tu buzon; si no, se pide al vuelo")
     p.add_argument("--solo-ficheros", metavar="PREFIJO",
                    help="no envia: deja PREFIJO.ehead y PREFIJO.ebody en disco")
@@ -583,14 +726,22 @@ def main():
         publicas = [clave_publica_de_fichero(r) for r in args.clave_para]
     else:
         aviso("Buscando las claves publicas:")
-        publicas = [clave_publica_de(args.servidor, d) for d in args.para]
+        publicas = [clave_publica_de(d) for d in args.para]
 
     if args.copia:
         publicas.append(clave_publica_de_fichero(args.copia))
         aviso("  (incluida tu clave, para poder leer tu copia)")
 
+    # WHERE THE SECOND PIECE IS GOING TO LIVE: the server this program
+    # delivers to, because that is the one that keeps it. It is derived
+    # from --servidor and not asked for separately, so the two can never
+    # disagree: sealing one origin while delivering to another produces
+    # mail whose recipient looks for the piece where it is not, and the
+    # sender is told everything went fine.
+    origen = args.origen or dominio_de_url(args.servidor)
+
     aviso("Cifrando en este ordenador...")
-    cabecera, cuerpo, body_id = sellar(claro, publicas, pin)
+    cabecera, cuerpo, body_id = sellar(claro, publicas, pin, origen)
     aviso("  eHead %d bytes,  eBody %d bytes" % (len(cabecera), len(cuerpo)))
 
     # Only said when the PIN is real. Announcing "protegido con PIN"

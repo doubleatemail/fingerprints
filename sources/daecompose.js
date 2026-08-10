@@ -128,7 +128,27 @@
     }
 
     /**
+     * El dominio de una direccion, en minusculas.
+     *
+     * Se quitan las dos arrobas antes: aqui las direcciones llegan como
+     * las escribe el usuario, "luis@@otro.email", y de ahi hay que sacar
+     * "otro.email" y no "@otro.email".
+     */
+    function dominioDe(szEmail) {
+        var sz = String(szEmail || '').trim().toLowerCase().replace('@@', '@');
+        var n  = sz.lastIndexOf('@');
+        return (n < 0 || n === sz.length - 1) ? '' : sz.substr(n + 1);
+    }
+
+    /**
      * La llave publica X25519 de una direccion, en crudo.
+     *
+     * SE LE PIDE AL DIRECTORIO DE ESA PERSONA, no al nuestro. Antes esta
+     * peticion salia siempre contra el dominio de la pagina, fuera quien
+     * fuera el destinatario: escribir a alguien de otro servidor daba
+     * "sin clave" aunque su clave estuviera publicada, porque se la
+     * estabamos pidiendo a quien no la tiene. Es el mismo fallo que
+     * arreglo clsKeyFetch en el servidor, en la copia del navegador.
      *
      * El directorio ya no sirve un PEM: son 64 caracteres hexadecimales
      * con su etiqueta delante, "curve" la de cifrar y "sign" la de
@@ -141,8 +161,18 @@
      * @returns {Uint8Array} 32 bytes
      */
     async function clavePublicaDe(szEmail) {
-        var objResp = await fetch('/.well-known/dae/hu/' + await hu(szEmail),
-                                  { credentials: 'omit' });
+        var szDominio = dominioDe(szEmail);
+        if (!window.daeSeal.dominioValido(szDominio)) {
+            throw new Error('dominio_malo:' + szEmail);
+        }
+
+        // Siempre https y escrito a mano: la clave con la que se cifra no
+        // se trae por un canal que no se pueda verificar. Para los de
+        // casa sale la misma direccion de la que viene la pagina, asi que
+        // no cambia nada; para los de fuera es la unica forma correcta.
+        var objResp = await fetch(
+            'https://' + szDominio + '/.well-known/dae/hu/' + await hu(szEmail),
+            { credentials: 'omit' });
         if (!objResp.ok) { throw new Error('sin_clave:' + szEmail); }
 
         var szHex = '';
@@ -213,8 +243,16 @@
             var objPin = document.getElementById('szPin');
             var szPin  = objPin ? objPin.value.trim() : '';
 
+            // EL ORIGEN: el dominio donde va a quedar la segunda pieza,
+            // que es este servidor, porque a el se le entrega. Lo dice el
+            // servidor en data-origen y no se saca de location.hostname:
+            // el dominio del correo y el sitio desde el que se sirve la
+            // pagina no tienen por que ser el mismo nombre, y el que
+            // manda es el del correo, que es al que se le pregunta.
+            var szOrigen = objCasilla.dataset.origen || '';
+
             decir(objCasilla.dataset.cifrando || '...');
-            var objSello = await window.daeSeal.sellar(arrMime, arrPubs, szPin);
+            var objSello = await window.daeSeal.sellar(arrMime, arrPubs, szPin, szOrigen);
 
             decir(objCasilla.dataset.enviando || '...');
             var objDatos = new FormData();

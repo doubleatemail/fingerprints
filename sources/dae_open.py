@@ -4,9 +4,11 @@ dae_open.py - Opens a puzzle email on YOUR computer.
 
     python dae_open.py mensaje.ehead --clave mi_clave.txt
 
-The program pulls out of your header where the other piece is, downloads
-it and writes the email. If you already have it downloaded, hand it over
-and it will not connect anywhere:
+The program pulls out of your header where the other piece is -which
+piece and on which server- downloads it and writes the email. You do not
+have to tell it where to look: the address is sealed inside the message.
+If you already have the piece downloaded, hand it over and it will not
+connect anywhere:
 
     python dae_open.py mensaje.ehead mensaje.ebody --clave mi_clave.txt
 
@@ -53,8 +55,8 @@ FORMAT (for anyone who wants to write their own version)
 --------------------------------------------------------
 The eHead is a JSON:
 
-    szVersion    "DAE-4"
-    szAlgo       "A256GCM+X25519+AONT+PIN"
+    szVersion    "DAE-5"
+    szAlgo       "A256GCM+X25519+AONT+PIN+ORIGIN"
     szIv         12 bytes in base64
     szTag        16 bytes in base64, the GCM tag
     nPinIter     PBKDF2 iterations used for the PIN
@@ -77,6 +79,7 @@ and it is opened like this, which is ECIES out of a textbook:
                              info = "DAE-3-KEK", 32 bytes)
     sobre      = AES-256-GCM-open(kek, nonce, resto)
                = clave_enmascarada(32) || localizador(32)
+                 || nLen(1) || origen(nLen bytes ASCII)
 
 The salt carries BOTH public keys. Without that, the same shared
 secret would give the same key in different contexts, which is how
@@ -131,6 +134,38 @@ The other 32 bytes of that same envelope are the eBody locator. They
 go there, encrypted, so that nobody knows where the second piece is
 without having your private key.
 
+THE ORIGIN, AND WHY IT ARRIVED LATE
+-----------------------------------
+Behind the locator comes one byte with a length, and then that many
+bytes of ASCII: the domain of the server where the second piece lives.
+
+Until DAE-4 the envelope said WHICH piece to ask for and never WHOM to
+ask, and every implementation quietly assumed the answer was its own
+server. That works exactly as long as there is one server in the world.
+The day a second one appeared, mail between them stopped at "the second
+half is no longer available": the recipient was looking in their own
+storage for a piece that had stayed in the sender's. This very file
+papered over it with a hardcoded doubleat.email, which is what gave it
+away.
+
+It travels INSIDE the envelope and never in the header, on purpose. The
+eHead is a file that gets forwarded, saved and copied. In the clear,
+whoever intercepted the carrier mail would learn which door to knock on
+for the other half; sealed, only the person who could already read the
+message knows.
+
+The length byte instead of a separator is not decoration: a separator
+forces a decision about what happens when it turns up inside the data,
+and that decision is where five implementations start reading five
+different things. One byte holds 255 and a domain name stops at 253.
+
+And a warning for anyone writing their own version: that domain is
+attacker-supplied. Encryption proves nobody altered it on the way, not
+that whoever wrote it means well. Opening a message must never become
+the way to make your computer fetch a URL of somebody else's choosing.
+Check it before you connect: public domain name, no IP literal, no
+port, no path, no reserved TLD. See dominio_valido() below.
+
 License: public domain. Copy it, change it, publish it.
 """
 
@@ -151,9 +186,24 @@ except ImportError:
     sys.exit("Falta la biblioteca 'cryptography'. Instalala con:\n\n"
              "    pip install cryptography\n")
 
-SERVIDOR_POR_DEFECTO = "https://doubleat.email"
 AGENTE = "dae_open.py/1.0 (+https://doubleat.email)"
-VERSION = "DAE-4"
+VERSION = "DAE-5"
+
+# There is NO default server, and its absence is the point of DAE-5.
+# This program used to have "https://doubleat.email" wired in, which
+# worked only because there was a single server in the world: a header
+# from anywhere else sent you asking the wrong machine for the piece,
+# and you got a 404 that said nothing about what was wrong. The address
+# now comes out of the message, sealed, where whoever wrote it put it.
+
+# Longest a domain name can be, RFC 1035. The envelope carries the
+# origin with its length in front, in one byte, which is what fits.
+ORIGEN_MAX = 253
+
+# Names that belong to nobody by definition (RFC 2606 and RFC 6761) or
+# that point back at your own machine.
+TLD_PROHIBIDOS = ("test", "invalid", "example", "local",
+                  "localhost", "internal", "home", "lan")
 
 # Domain label of the all-or-nothing mask. It goes inside the digest
 # so that value is good for nothing else in the protocol.
@@ -193,6 +243,48 @@ def aviso(texto):
     print(texto, file=sys.stderr)
 
 
+def dominio_valido(dominio):
+    """Can that name be asked for the second piece?
+
+    THE SAME RULE as clsKeyFetch::dominioValido() on the server, and it
+    has to stay the same: a public domain name with its dot, no IP
+    literal, no port, no path, no brackets, none of the reserved TLDs.
+
+    THIS IS NOT COSMETIC. The origin comes out of an envelope somebody
+    else sealed. That it arrived encrypted proves nobody altered it in
+    transit; it proves nothing about whoever wrote it. Opening a message
+    must never become the way to make your computer fetch a URL of
+    somebody else's choosing: without this filter, sending you an email
+    would be enough to make this program call 'localhost' or an address
+    inside your network, and report back whatever came out. Refusing is
+    the correct answer here, not an inconvenience.
+    """
+    dominio = str(dominio or "").strip().lower()
+
+    if not dominio or len(dominio) > ORIGEN_MAX:
+        return False
+
+    etiquetas = dominio.split(".")
+    if len(etiquetas) < 2:
+        return False
+
+    for etiqueta in etiquetas:
+        if not etiqueta or len(etiqueta) > 63:
+            return False
+        if etiqueta[0] == "-" or etiqueta[-1] == "-":
+            return False
+        if any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-" for c in etiqueta):
+            return False
+
+    # An IPv4 address would pass the test above. It does not do: the
+    # piece is not asked of a number, it is asked of a name, which is
+    # the only thing a certificate can vouch for.
+    if all(c in "0123456789." for c in dominio):
+        return False
+
+    return etiquetas[-1] not in TLD_PROHIBIDOS
+
+
 def cargar_clave_privada(ruta):
     """Reads your X25519 private key: 64 hex characters, raw bytes."""
     try:
@@ -221,6 +313,14 @@ def abrir_entrada(clave_privada, entradas):
 
     The rest failing is the normal thing: an email can be sealed for
     several recipients and only one entry is yours.
+
+    What comes out of the one that opens is three things now:
+
+        k'(32) || locator(32) || nLen(1) || origin(nLen)
+
+    The envelope is no longer a fixed 64 bytes. The length byte rules,
+    and it has to agree with what is left: an envelope that does not add
+    up with itself is not interpreted as best we can, it is discarded.
     """
     # Our own public key goes in the HKDF salt, and it is recomputed
     # here instead of read from the envelope: a salt supplied by
@@ -261,10 +361,22 @@ def abrir_entrada(clave_privada, entradas):
         except Exception:
             continue
 
-        if len(crudo) == LONGITUD_CLAVE + LONGITUD_LOCALIZADOR:
-            return crudo[:LONGITUD_CLAVE], crudo[LONGITUD_CLAVE:], huella
+        fijo = LONGITUD_CLAVE + LONGITUD_LOCALIZADOR
+        if len(crudo) <= fijo:
+            continue
 
-    return None, None, None
+        largo = crudo[fijo]
+        if largo < 1 or len(crudo) != fijo + 1 + largo:
+            continue
+
+        origen = crudo[fijo + 1:].decode("ascii", "replace").strip().lower()
+
+        return (crudo[:LONGITUD_CLAVE],
+                crudo[LONGITUD_CLAVE:fijo],
+                origen,
+                huella)
+
+    return None, None, None, None
 
 
 def descargar_pieza(servidor, localizador):
@@ -274,8 +386,12 @@ def descargar_pieza(servidor, localizador):
     Nothing else is sent: not who you are, not your key, not which
     message it is about. The locator is the only credential, and only
     whoever has been able to open the header has it.
+
+    'servidor' is a bare domain name, checked by dominio_valido()
+    before getting here, and https is written out by hand: the address
+    came out of a message somebody else wrote.
     """
-    url = "%s/ebody/%s" % (servidor.rstrip("/"), localizador.hex())
+    url = "https://%s/ebody/%s" % (servidor, localizador.hex())
     print("Descargando la otra pieza de %s ..." % servidor)
 
     # We identify ourselves by our own name. This is not cosmetic: the
@@ -318,9 +434,10 @@ def main():
                         "mensaje: quien te lo envio tiene que decirtelo por "
                         "otro camino. Si no lo pones se prueba con 000000")
     p.add_argument("--salida", "-o", default=None, help="fichero .eml a escribir")
-    p.add_argument("--servidor", "-s", default=SERVIDOR_POR_DEFECTO,
-                   help="de donde bajar la segunda pieza (por defecto %s)"
-                        % SERVIDOR_POR_DEFECTO)
+    p.add_argument("--servidor", "-s", default=None, metavar="DOMINIO",
+                   help="forzar de que servidor se baja la segunda pieza. "
+                        "NO hace falta: el mensaje ya dice donde esta, y "
+                        "esto solo sirve para probar contra otra maquina")
     p.add_argument("--guardar-pieza", action="store_true",
                    help="deja tambien en disco la pieza descargada, por si "
                         "quieres guardarla y no volver a depender del servidor")
@@ -352,7 +469,7 @@ def main():
 
     # --- your key opens the entry that is yours ----------------------
     clave_privada = cargar_clave_privada(args.clave)
-    clave_aes, localizador, huella = abrir_entrada(
+    clave_aes, localizador, origen, huella = abrir_entrada(
         clave_privada, cabecera.get("arrEncKeys", {}))
 
     if clave_aes is None:
@@ -361,7 +478,7 @@ def main():
                  "direccion a la que llego.")
 
     print("Abierto con la clave de huella %s" % huella[:16])
-    print("La otra pieza esta en %s" % localizador.hex()[:16])
+    print("La otra pieza esta en %s, en %s" % (origen, localizador.hex()[:16]))
 
     # --- the second piece: you have it or it gets downloaded ----------
     if args.ebody:
@@ -371,7 +488,21 @@ def main():
         except OSError as e:
             sys.exit("No se ha podido leer la segunda pieza: %s" % e)
     else:
-        cuerpo = descargar_pieza(args.servidor, localizador)
+        # WHERE IT IS COMES FROM THE MESSAGE, not from a constant in
+        # this file. --servidor is only there to point the program at a
+        # test machine, and even then the name has to pass the same
+        # check: neither the message nor the command line gets to send
+        # this program at an address that is not a public domain name.
+        donde = args.servidor or origen
+        if not dominio_valido(donde):
+            sys.exit("Este correo dice que su otra pieza esta en '%s',\n"
+                     "y eso no es un nombre de servidor al que se le pueda\n"
+                     "pedir nada: no se va a ir a buscarla ahi.\n"
+                     "Si ya la tienes bajada, pasasela como segundo\n"
+                     "argumento y este programa no se conectara a ningun\n"
+                     "sitio." % donde)
+
+        cuerpo = descargar_pieza(donde, localizador)
         if args.guardar_pieza:
             ruta = localizador.hex() + ".ebody"
             with open(ruta, "wb") as f:

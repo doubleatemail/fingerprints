@@ -15,10 +15,11 @@
  * implementations drift apart by one byte, the mail opens in one and not
  * in the other. There is a cross test in tests/.
  *
- * Un solo formato, DAE-4, y a proposito. RSA se borro entero el
- * 2026-08-10, con el sistema sin usuarios reales: sostener dos caminos
- * de cifrado que no usaba nadie era pagar para siempre por nada. Ver
- * clsEBlock.php y 06_AT_AT_PROTOCOL.md, secciones 3.ter y 3.quater.
+ * Un solo formato, DAE-5, y a proposito. RSA y los formatos anteriores
+ * se borraron enteros el 2026-08-10, con el sistema sin usuarios reales
+ * y sin un correo repartido: sostener caminos de cifrado que no usaba
+ * nadie era pagar para siempre por nada. Ver clsEBlock.php y
+ * 06_AT_AT_PROTOCOL.md, secciones 3.ter, 3.quater y 3.quinquies.
  *
  * A LIMIT THAT IS HIDDEN FROM NOBODY: this file is served by our
  * server. A compromised server could send a version that snitches. This
@@ -30,10 +31,31 @@ window.daeSeal = (function () {
     'use strict';
 
     var ETIQUETA_AONT = 'DAE-AONT-v2';
-    var VERSION       = 'DAE-4';
-    var ALGO          = 'A256GCM+X25519+AONT+PIN';
+    var VERSION       = 'DAE-5';
+    var ALGO          = 'A256GCM+X25519+AONT+PIN+ORIGIN';
     var MAX_HEAD      = 102400;   // 100 KB
     var RATIO_HEAD    = 0.10;     // 10 %
+
+    /**
+     * EL ORIGEN: el dominio donde va a quedar la segunda pieza.
+     *
+     * Hasta DAE-4 el sobre decia QUE pieza pedir y no decia DONDE vive,
+     * asi que quien recibia de otro servidor la buscaba en su propia
+     * casa y no estaba nunca. El correo puzzle entre dominios distintos
+     * era imposible y no se noto porque solo habia un servidor.
+     *
+     * Va DENTRO del sobre, no en la cabecera: el eHead es un fichero que
+     * se reenvia y se guarda, y suelto no puede ser un mapa hacia la
+     * otra mitad. Formato, igual que en las otras cuatro
+     * implementaciones:
+     *
+     *     k'(32) || localizador(32) || nLen(1) || origen(nLen)
+     *
+     * La longitud por delante y no un separador: un separador obliga a
+     * decidir que pasa cuando aparece dentro del dato, y ahi es donde
+     * cinco implementaciones empiezan a leer cosas distintas.
+     */
+    var ORIGEN_MAX = 253;   // maximo de un nombre de dominio, RFC 1035
 
     /**
      * El PIN va SIEMPRE, y cuando no hay segundo canal es este.
@@ -99,6 +121,43 @@ window.daeSeal = (function () {
         arrOut.set(arrA, 0);
         arrOut.set(arrB, arrA.length);
         return arrOut;
+    }
+
+    /**
+     * A ese nombre se le puede pedir la otra pieza?
+     *
+     * La regla es la de clsKeyFetch::dominioValido() y tiene que decir
+     * lo mismo que ella: nombre de dominio publico con su punto, sin IP,
+     * sin puerto, sin ruta, sin corchetes y sin los TLD reservados que
+     * por definicion no son de nadie. Esta repetida aqui, y en
+     * daecrypto.js, porque los dos ficheros se cargan por separado -la
+     * pagina de leer un mensaje no trae este- y una dependencia entre
+     * ellos dejaria media aplicacion sin validar.
+     *
+     * Al sellar sirve para cazar una configuracion mal escrita antes de
+     * producir correo que no abre nadie. Al abrir (daecrypto.js) sirve
+     * para algo mas serio, y alli esta explicado.
+     */
+    function dominioValido(szDominio) {
+        szDominio = String(szDominio || '').trim().toLowerCase();
+
+        if (szDominio === '' || szDominio.length > ORIGEN_MAX) { return false; }
+
+        if (!/^[a-z0-9]([a-z0-9\-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9\-]*[a-z0-9])?)+$/
+                .test(szDominio)) {
+            return false;
+        }
+
+        // Una IPv4 pasaria el patron de arriba. No vale: la pieza no se
+        // le pide a un numero, se le pide a un nombre, que es lo unico
+        // que un certificado puede acreditar.
+        if (/^[0-9.]+$/.test(szDominio)) { return false; }
+
+        var arrProhibidos = ['test', 'invalid', 'example', 'local',
+                             'localhost', 'internal', 'home', 'lan'];
+        var szTld = szDominio.split('.').pop();
+
+        return arrProhibidos.indexOf(szTld) < 0;
     }
 
     /**
@@ -240,14 +299,26 @@ window.daeSeal = (function () {
      * opcional en el formato: si no llega, va el de por defecto y el
      * camino de cifrado es exactamente el mismo.
      *
+     * El origen es OBLIGATORIO y no tiene valor por defecto. Aqui no se
+     * puede adivinar: el navegador esta en la maquina de quien escribe,
+     * y el dominio de la barra de direcciones no tiene por que ser
+     * aquel donde va a quedar la pieza. Quien llama lo sabe -se lo dice
+     * el servidor al que va a entregar- y tiene que decirlo. Ponerle un
+     * valor por defecto seria sellar correo que no abre nadie el dia que
+     * alguien monte esto en otro sitio.
+     *
      * @param {Uint8Array}   arrPlain  the inner MIME, already assembled
      * @param {Uint8Array[]} arrPubs   X25519 keys of the recipients
      * @param {string}       [szPin]   el segundo canal, si lo hay
+     * @param {string}       szOrigen  dominio donde quedara el eBody
      * @returns {{szHead:string, arrBody:Uint8Array, szBodyId:string}}
      */
-    async function sellar(arrPlain, arrPubs, szPin) {
+    async function sellar(arrPlain, arrPubs, szPin, szOrigen) {
         if (!arrPlain || arrPlain.length === 0) { throw new Error('mensaje_vacio'); }
         if (!arrPubs || arrPubs.length === 0)   { throw new Error('sin_claves'); }
+
+        szOrigen = String(szOrigen || '').trim().toLowerCase();
+        if (!dominioValido(szOrigen)) { throw new Error('origen_malo'); }
 
         if (szPin === undefined || szPin === null || szPin === '') {
             szPin = PIN_DEFECTO;
@@ -319,12 +390,20 @@ window.daeSeal = (function () {
         for (var p = 0; p < 32; p++) { arrKeyOut[p] ^= arrPin[p]; }
 
         // 5. un sobre de curva por destinatario. Cada uno lleva la llave
-        //    ENMASCARADA y el localizador: el localizador sale entero,
-        //    porque hay que saber que pieza pedir antes de tenerla; la
-        //    llave no sirve hasta tenerlo todo.
-        var arrSemilla = new Uint8Array(64);
+        //    ENMASCARADA, el localizador y el origen: los dos ultimos
+        //    salen enteros, porque hay que saber que pieza pedir y a
+        //    quien antes de tenerla; la llave no sirve hasta tenerlo
+        //    todo.
+        //
+        //    Ya no son 64 bytes fijos: el origen es de largo variable y
+        //    lleva delante su longitud en un byte. Cualquier sitio que
+        //    siga dando por hecho el 64 lee mal el sobre.
+        var arrOrigen  = new TextEncoder().encode(szOrigen);
+        var arrSemilla = new Uint8Array(65 + arrOrigen.length);
         arrSemilla.set(arrKeyOut, 0);
         arrSemilla.set(arrBodyId, 32);
+        arrSemilla[64] = arrOrigen.length;
+        arrSemilla.set(arrOrigen, 65);
 
         var objEncKeys = {};
         for (var j = 0; j < arrPubs.length; j++) {
@@ -368,6 +447,10 @@ window.daeSeal = (function () {
     return {
         sellar:  sellar,
         huella:  huella,
+        // Se saca para que los tests puedan comprobar que dice lo mismo
+        // que clsKeyFetch::dominioValido(). Dos reglas que se separen
+        // producen correo que un lado sella y el otro no abre.
+        dominioValido: dominioValido,
         VERSION: VERSION
     };
 })();
