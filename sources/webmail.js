@@ -57,8 +57,8 @@
     if (szCc) { szCc.addEventListener('input', detect); }
     detect();
 
-    // Contador de ficheros elegidos. El texto viene del servidor, para
-    // que siga siendo multiidioma.
+    // Counter of chosen files. The text comes from the server, so it
+    // stays multilingual.
     var objFiles = document.getElementById('arrFiles');
     var objList  = document.getElementById('fileList');
     if (objFiles && objList) {
@@ -75,16 +75,16 @@
 
 
 /**
- * Aviso de cookies.
+ * Cookie notice.
  *
- * Bloque aparte a proposito: el de arriba se corta pronto si no hay caja
- * de redaccion, asi que aqui dentro no se ejecutaria nunca en la web
- * publica, que es justo donde hace falta.
+ * A separate block on purpose: the one above bails out early if there is
+ * no compose box, so this code would never run on the public site,
+ * which is exactly where it is needed.
  *
- * El "ya lo he leido" se guarda en localStorage y no en una cookie. Seria
- * un chiste malo poner una cookie para recordar que te hemos dicho que no
- * usamos cookies. Ademas localStorage no viaja al servidor: ese dato no
- * sale del navegador de quien lee.
+ * The "I already read it" flag goes to localStorage and not to a cookie.
+ * It would be a bad joke to set a cookie just to remember that we told
+ * you we do not use cookies. Besides, localStorage never travels to the
+ * server: that bit never leaves the reader's browser.
  */
 (function () {
     'use strict';
@@ -95,22 +95,23 @@
 
     var szClave = 'dae.aviso.cookies';
 
-    // En navegacion privada algunos navegadores tienen localStorage pero
-    // lanzan al escribir. Si no se puede guardar, la barra sale siempre:
-    // molesta, pero es lo honesto. Fingir que se recordo seria peor.
+    // In private browsing some browsers do have localStorage but throw
+    // on write. If it cannot be saved, the bar shows up every time:
+    // annoying, but honest. Pretending we remembered would be worse.
     function leido() {
         try { return window.localStorage.getItem(szClave) === '1'; }
         catch (e) { return false; }
     }
     function anotar() {
         try { window.localStorage.setItem(szClave, '1'); }
-        catch (e) { /* sin sitio donde anotarlo: volvera a salir */ }
+        catch (e) { /* nowhere to write it down: it will show again */ }
     }
 
     if (leido()) { return; }
 
-    // La clase sube el boton flotante mientras el aviso ocupa el borde
-    // inferior. Sin esto se solapan y uno de los dos queda inservible.
+    // The class lifts the floating button while the notice takes the
+    // bottom edge. Without this they overlap and one of the two is
+    // unusable.
     objBar.hidden = false;
     document.body.classList.add('con-aviso');
 

@@ -1,19 +1,19 @@
 /**
- * DAE - Lector de MIME para el navegador
+ * DAE - MIME reader for the browser
  *
- * Lo usan dos sitios: la demostracion publica, que junta las dos piezas
- * en la pagina, y la lectura en custodia propia, donde el mensaje se
- * descifra en el navegador porque la clave privada no esta en nuestros
- * servidores.
+ * Two places use it: the public demo, which puts the two pieces back
+ * together in the page, and reading under own custody, where the
+ * message is decrypted in the browser because the private key is not
+ * on our servers.
  *
- * Entiende lo que este sistema genera —multiparte con frontera y partes
- * en base64 o quoted-printable— y nada mas. No pretende ser un lector de
- * correo: para eso esta el .eml y el programa que cada uno prefiera.
+ * It understands what this system generates -- multipart with boundary
+ * and parts in base64 or quoted-printable -- and nothing else. It is no
+ * mail reader: for that there is the .eml and whichever program you like.
  *
- * OJO con la frontera: es sensible a mayusculas. Pasar la cabecera
- * Content-Type entera a minusculas para comparar el tipo se lleva por
- * delante la frontera y el mensaje sale vacio sin dar ningun error. Le
- * paso al lector de PHP el 2026-08-09 y esta escrito en testMime.php.
+ * WATCH OUT with the boundary: it is case sensitive. Lowercasing the
+ * whole Content-Type header to compare the type takes the boundary down
+ * with it and the message comes out empty with no error at all. It hit
+ * the PHP reader on 2026-08-09 and it is written down in testMime.php.
  */
 
 window.daeMime = (function () {
@@ -53,7 +53,7 @@ window.daeMime = (function () {
                  });
     }
 
-    /** Bytes -> texto UTF-8, sin romperse con los acentos */
+    /** Bytes -> UTF-8 text, without breaking on the accents */
     function texto(arrBytes) {
         try {
             return new TextDecoder('utf-8').decode(arrBytes);
@@ -71,9 +71,9 @@ window.daeMime = (function () {
     }
 
     /**
-     * Saca de un mensaje su asunto, su remitente, su texto y sus ficheros.
+     * Pulls out of a message its subject, sender, text and files.
      *
-     * @param {string} szRaw el MIME crudo, ya descifrado
+     * @param {string} szRaw the raw MIME, already decrypted
      */
     function leer(szRaw) {
         var arrTop  = partir(szRaw);
@@ -96,7 +96,7 @@ window.daeMime = (function () {
         var szTipoBajo = szTipo.toLowerCase();
 
         if (szTipoBajo.indexOf('multipart/') === 0) {
-            // la frontera se lee del ORIGINAL, con sus mayusculas
+            // the boundary is read from the ORIGINAL, with its capitals
             var szFrontera = parametro(szTipo, 'boundary');
             if (!szFrontera) { return; }
 
@@ -135,7 +135,7 @@ window.daeMime = (function () {
         }
     }
 
-    /** Cabeceras con =?UTF-8?B?...?= */
+    /** Headers with =?UTF-8?B?...?= */
     function descodificarCabecera(sz) {
         if (!sz || sz.indexOf('=?') === -1) { return (sz || '').trim(); }
         return sz.replace(/=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g, function (_, cs, tipo, dato) {

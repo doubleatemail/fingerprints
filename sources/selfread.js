@@ -1,13 +1,14 @@
 /**
- * DAE - Pantalla de lectura en custodia propia
+ * DAE - Self-custody reading screen
  *
- * Engancha el formulario de la clave con daecrypto.js y pinta el mensaje
- * ya descifrado. Todo el trabajo pasa en esta pestanya: el servidor
- * mando el eHead —que sin la clave no dice nada— y nada mas.
+ * Wires the key form to daecrypto.js and paints the message once it is
+ * decrypted. All the work happens in this tab: the server sent the
+ * eHead -- which says nothing without the key -- and nothing else.
  *
- * La clave se queda en memoria mientras la pestanya viva. Al recargar
- * hay que volver a ponerla, y es a proposito: guardarla en el navegador
- * seria comodo hoy y un disgusto el dia que alguien use ese ordenador.
+ * The key stays in memory only while the tab lives. On reload you have
+ * to type it again, and that is on purpose: keeping it in the browser
+ * would be handy today and a disaster the day someone else uses that
+ * computer.
  */
 
 (function () {
@@ -107,7 +108,7 @@
             var szCrudo = await window.daeCrypto.abrir(szHead, '');
             pintar(window.daeMime.leer(szCrudo));
         } catch (objErr) {
-            window.daeCrypto.olvidar();          // que no quede a medias
+            window.daeCrypto.olvidar();          // leave nothing half-done
             aviso(motivo(objErr.message));
         }
     });

@@ -1,28 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-dae_send.py - Enviar un correo puzzle SIN pasar por nuestro navegador
+dae_send.py - Send a puzzle email WITHOUT going through our browser
 
-Dominio publico. Copialo, leelo entero, cambialo, redistribuyelo.
-
-------------------------------------------------------
-PARA QUE SIRVE
-------------------------------------------------------
-Cuando escribes desde la web, el programa que cifra tu correo te lo
-manda nuestro servidor cada vez que abres la pagina. Un servidor
-comprometido, o presionado, podria mandarte una version que se guarde una
-copia de lo que escribes, y no lo notarias. Eso vale aqui y vale para
-cualquier correo cifrado que funcione dentro de un navegador.
-
-Este programa es la salida. Cifra en TU ordenador, con codigo que puedes
-leer entero antes de ejecutarlo, y al servidor solo le llegan las dos
-piezas ya cerradas. No ve tu mensaje, ni tus adjuntos, ni puede verlos
-despues.
-
-Su pareja es dae_open.py, que hace lo mismo al reves.
+Public domain. Copy it, read it whole, change it, redistribute it.
 
 ------------------------------------------------------
-COMO SE USA
+WHAT THIS IS FOR
+------------------------------------------------------
+When you write from the web, the program that encrypts your email is
+sent to you by our server every time you open the page. A compromised
+server, or one under pressure, could send you a version that keeps a
+copy of what you write, and you would not notice. That holds here and
+it holds for any encrypted mail that runs inside a browser.
+
+This program is the way out. It encrypts on YOUR computer, with code
+you can read whole before running it, and all the server gets is the
+two already closed pieces. It does not see your message, nor your
+attachments, nor can it see them afterwards.
+
+Its counterpart is dae_open.py, which does the same thing backwards.
+
+------------------------------------------------------
+HOW TO USE IT
 ------------------------------------------------------
     python dae_send.py --de ana@doubleat.email \\
                        --para luis@doubleat.email \\
@@ -31,31 +31,35 @@ COMO SE USA
                        --adjunto contrato.pdf \\
                        --firmar mi_clave_privada.pem
 
-Te pedira la contrasenya de tu buzon, que es la misma del correo. No se
-guarda en ninguna parte.
+It will ask you for your mailbox password, the same one as the mail. It
+is not stored anywhere.
 
-Con --solo-ficheros no envia nada: deja el .ehead y el .ebody en disco
-para que los mires antes de decidir.
+With --solo-ficheros it sends nothing: it leaves the .ehead and the
+.ebody on disk so you can look at them before deciding.
 
 ------------------------------------------------------
-QUE HACE POR DENTRO, EN ORDEN
+WHAT IT DOES INSIDE, IN ORDER
 ------------------------------------------------------
- 1. Monta tu mensaje en MIME, adjuntos incluidos.
- 2. Lo firma, si le das tu clave privada. La firma va DENTRO de lo que se
-    cifra: fuera anunciaria a quien intercepte quien escribe.
- 3. Busca la clave publica de cada destinatario en el directorio.
- 4. Cifra todo con AES-256-GCM, con una clave nueva para este mensaje.
- 5. TRANSFORMACION TODO-O-NADA: enmascara esa clave con el resumen del
-    cifrado ENTERO. Sin las dos piezas completas no se recupera, asi que a
-    quien intercepte una no le sirve de nada, ni con el tiempo, ni con la
-    clave privada del destinatario.
- 6. Parte el resultado: el 10 % va en el eHead y el resto en el eBody.
- 7. Entrega las dos piezas. El servidor reparte sin abrir nada.
+ 1. Assembles your message in MIME, attachments included.
+ 2. Signs it, if you give it your private key. The signature goes
+    INSIDE what is encrypted: outside it would announce to whoever
+    intercepts who is writing.
+ 3. Looks up each recipient's public key in the directory.
+ 4. Encrypts everything with AES-256-GCM, with a new key for this
+    message.
+ 5. ALL-OR-NOTHING TRANSFORM: masks that key with the digest of the
+    ENTIRE ciphertext. Without both complete pieces it cannot be
+    recovered, so whoever intercepts one gets nothing out of it,
+    neither with time, nor with the recipient's private key.
+ 6. Splits the result: 10 % goes in the eHead and the rest in the
+    eBody.
+ 7. Delivers the two pieces. The server distributes without opening
+    anything.
 
-Los pasos 4, 5 y 6 tienen que dar EXACTAMENTE lo mismo que clsEBlock.php
-y que daeseal.js. Hay prueba cruzada en tests/testCruzado.php: si las
-tres no coinciden byte a byte, hay correo que se abre en un sitio y no en
-otro. Si cambias algo aqui, pasa esa prueba.
+Steps 4, 5 and 6 have to produce EXACTLY the same as clsEBlock.php and
+as daeseal.js. There is a cross-check in tests/testCruzado.php: if the
+three do not match byte for byte, there is mail that opens in one place
+and not in another. If you change something here, pass that test.
 """
 
 import argparse
@@ -90,9 +94,9 @@ RATIO_HEAD    = 0.10        # 10 %
 MARCA_FIRMA = "DAE-SIG1"
 ALGO_FIRMA  = "RSA-SHA256"
 
-# Alfabeto z-base32, el que usa el directorio de claves. No es el base32
-# de siempre: esta ordenado para que los caracteres que se confunden al
-# leerlos en voz alta caigan lejos unos de otros.
+# z-base32 alphabet, the one the key directory uses. It is not the
+# usual base32: it is ordered so that the characters that get confused
+# when read out loud fall far away from each other.
 ALFABETO_Z = "ybndrfg8ejkmcpqxot1uwisza345h769"
 
 
@@ -101,7 +105,7 @@ def aviso(texto):
 
 
 # ---------------------------------------------------------------------------
-#  El directorio de claves
+#  The key directory
 # ---------------------------------------------------------------------------
 
 def zbase32(datos):
@@ -114,11 +118,11 @@ def zbase32(datos):
 
 
 def hu(direccion):
-    """El identificador de una direccion en el directorio.
+    """The identifier of an address in the directory.
 
-    Solo la parte local, en minusculas. No se pregunta por la direccion
-    sino por su resumen, para que el directorio no se pueda recorrer y
-    nadie pueda cosechar la lista de usuarios probando nombres.
+    Only the local part, in lowercase. What is asked for is not the
+    address but its digest, so that the directory cannot be walked and
+    nobody can harvest the user list by trying out names.
     """
     local = direccion.strip().lower().split("@")[0]
     return zbase32(hashlib.sha1(local.encode("utf-8")).digest())
@@ -140,9 +144,10 @@ def clave_publica_de(servidor, direccion):
     except urllib.error.URLError as e:
         sys.exit("No se ha podido consultar el directorio: %s" % e.reason)
 
-    # La huella se ensenya SIEMPRE. Quien sirve el directorio podria colar
-    # su propia clave, y contra eso no protege el cifrado: lo unico que
-    # protege es que la compares con tu destinatario por otro canal.
+    # The fingerprint is ALWAYS shown. Whoever serves the directory
+    # could slip in their own key, and encryption does not protect
+    # against that: the only thing that does is you comparing it with
+    # your recipient over another channel.
     if huella:
         aviso("  %s -> %s" % (direccion, " ".join(
             huella.upper()[i:i + 4] for i in range(0, len(huella), 4))))
@@ -150,7 +155,7 @@ def clave_publica_de(servidor, direccion):
 
 
 # ---------------------------------------------------------------------------
-#  El mensaje
+#  The message
 # ---------------------------------------------------------------------------
 
 def montar_mime(de, para, asunto, texto, adjuntos):
@@ -174,11 +179,11 @@ def montar_mime(de, para, asunto, texto, adjuntos):
 
 
 def firmar(claro, ruta_clave, remitente, contrasena):
-    """Envuelve el mensaje con su firma, ANTES de cifrarlo.
+    """Wraps the message with its signature, BEFORE encrypting it.
 
-    La firma tiene que quedar dentro del cifrado: fuera le diria a quien
-    intercepte el correo quien lo escribe, que es justo lo que el
-    protocolo evita.
+    The signature has to end up inside the ciphertext: outside it would
+    tell whoever intercepts the email who wrote it, which is exactly
+    what the protocol avoids.
     """
     with open(ruta_clave, "rb") as f:
         datos = f.read()
@@ -207,24 +212,25 @@ def firmar(claro, ruta_clave, remitente, contrasena):
 
 
 # ---------------------------------------------------------------------------
-#  El sellado.  ESTO tiene que coincidir con clsEBlock.php y daeseal.js
+#  The sealing.  THIS has to match clsEBlock.php and daeseal.js
 # ---------------------------------------------------------------------------
 
 def sellar(claro, pems):
     clave = secrets.token_bytes(32)
     iv    = secrets.token_bytes(12)
 
-    # AESGCM devuelve el tag pegado al final; el resto del sistema los
-    # lleva separados, asi que se parten aqui.
+    # AESGCM returns the tag stuck to the end; the rest of the system
+    # keeps them apart, so they are split here.
     con_tag  = AESGCM(clave).encrypt(iv, claro, None)
     cifrado  = con_tag[:-16]
     tag      = con_tag[-16:]
 
-    # TRANSFORMACION TODO-O-NADA. La clave no viaja: viaja enmascarada
-    # con el resumen del cifrado ENTERO. Para quitarle la mascara hacen
-    # falta las dos piezas hasta el ultimo byte, asi que a quien
-    # intercepte una no le sirve de nada. No es que le falte potencia de
-    # calculo: le faltan datos, y los datos que no existen no se calculan.
+    # ALL-OR-NOTHING TRANSFORM. The key does not travel: it travels
+    # masked with the digest of the ENTIRE ciphertext. Taking the mask
+    # off needs both pieces down to the last byte, so whoever
+    # intercepts one gets nothing out of it. It is not that they lack
+    # computing power: they lack data, and data that does not exist
+    # cannot be computed.
     mascara   = hashlib.sha256(ETIQUETA_AONT + cifrado).digest()
     clave_out = bytes(a ^ b for a, b in zip(clave, mascara))
 
@@ -238,9 +244,10 @@ def sellar(claro, pems):
             encoding=serialization.Encoding.DER,
             format=serialization.PublicFormat.SubjectPublicKeyInfo)
 
-        # RSA-OAEP con SHA-1: es lo que usa OpenSSL por defecto y por
-        # tanto lo que hay en todo el correo ya repartido. Cambiarlo aqui
-        # dejaria los mensajes ilegibles para el resto del sistema.
+        # RSA-OAEP with SHA-1: it is what OpenSSL uses by default and
+        # therefore what is in all the mail already delivered. Changing
+        # it here would leave the messages unreadable for the rest of
+        # the system.
         sellada = publica.encrypt(semilla, padding.OAEP(
             mgf=padding.MGF1(algorithm=hashes.SHA1()),
             algorithm=hashes.SHA1(), label=None))
@@ -260,9 +267,10 @@ def sellar(claro, pems):
         "nBlockSize": n_block,
         "nHeadSize":  n_head,
         "arrEncKeys": enc_keys,
-        # szChecksum NO va: era el resumen del cifrado entero, y es
-        # exactamente el valor que quita la mascara. Publicarlo en la
-        # pieza que viaja por correo dejaria todo esto en nada.
+        # szChecksum is NOT here: it was the digest of the entire
+        # ciphertext, and it is exactly the value that takes the mask
+        # off. Publishing it in the piece that travels by mail would
+        # reduce all of this to nothing.
         "szPayload":  base64.b64encode(cifrado[:n_head]).decode("ascii"),
     }
 
@@ -272,7 +280,7 @@ def sellar(claro, pems):
 
 
 # ---------------------------------------------------------------------------
-#  La entrega
+#  The delivery
 # ---------------------------------------------------------------------------
 
 def entregar(servidor, usuario, contrasena, para, cabecera, cuerpo, body_id, retencion):
@@ -365,10 +373,10 @@ def main():
     else:
         aviso("AVISO: sin --firmar, tu destinatario vera el correo como no firmado.")
 
-    # Si te dan las claves a mano, no se consulta el directorio. Quien
-    # ya tiene la clave de su destinatario, comprobada por otro canal, no
-    # tiene por que fiarse de que se la sirvamos nosotros: el directorio
-    # es un punto de confianza y esta es la forma de esquivarlo.
+    # If the keys are handed over by hand, the directory is not
+    # consulted. Whoever already has their recipient's key, checked over
+    # another channel, has no reason to trust us to serve it: the
+    # directory is a trust point and this is the way to sidestep it.
     if args.clave_para:
         if len(args.clave_para) != len(args.para):
             sys.exit("Has dado %d destinatarios y %d claves. Tienen que ir "

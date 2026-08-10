@@ -1,82 +1,83 @@
 #!/usr/bin/env python3
 """
-dae_open.py - Abre un correo puzzle en TU ordenador.
+dae_open.py - Opens a puzzle email on YOUR computer.
 
     python dae_open.py mensaje.ehead --clave mi_clave.pem
 
-El programa saca de tu cabecera donde esta la otra pieza, se la descarga
-y escribe el correo. Si ya la tienes bajada, pasasela y no se conecta a
-ningun sitio:
+The program pulls out of your header where the other piece is, downloads
+it and writes the email. If you already have it downloaded, hand it over
+and it will not connect anywhere:
 
     python dae_open.py mensaje.ehead mensaje.ebody --clave mi_clave.pem
 
-Junta las dos piezas y escribe un fichero .eml corriente, que puedes
-abrir con Thunderbird, Outlook, Apple Mail o cualquier otro programa.
+It joins the two pieces and writes an ordinary .eml file, which you can
+open with Thunderbird, Outlook, Apple Mail or any other program.
 
-POR QUE EXISTE ESTO
--------------------
-Tu clave privada no sale de tu ordenador. Lo unico que este programa
-llega a pedirle al servidor es la segunda pieza, y la pide por su
-localizador, sin decir quien eres ni de que mensaje se trata: el
-servidor no puede saberlo. Puedes leerlo entero -son doscientas
-lineas- y comprobar que es verdad, cosa que no puedes hacer con una
-pagina web, porque la pagina te la servimos nosotros cada vez que
-entras.
+WHY THIS EXISTS
+---------------
+Your private key never leaves your computer. The only thing this
+program ever asks the server for is the second piece, and it asks for
+it by its locator, without saying who you are or which message it is
+about: the server cannot know. You can read it whole -it is two
+hundred lines- and check that this is true, which is something you
+cannot do with a web page, because we are the ones serving you that
+page every time you come in.
 
-Y sigue funcionando aunque doubleat.email desaparezca. Guarda las dos
-piezas y tu clave, y dentro de diez anyos ese correo se seguira
-abriendo. Eso es lo que convierte al protocolo '@@' en algo que no
-depende de nosotros.
+And it keeps working even if doubleat.email disappears. Keep the two
+pieces and your key, and ten years from now that email will still
+open. That is what turns the '@@' protocol into something that does
+not depend on us.
 
-QUE NECESITAS
+WHAT YOU NEED
 -------------
     pip install cryptography
 
-FORMATO (para quien quiera escribir su propia version)
-------------------------------------------------------
-El eHead es un JSON:
+FORMAT (for anyone who wants to write their own version)
+--------------------------------------------------------
+The eHead is a JSON:
 
-    szVersion    "DAE-2"  (o "DAE-1", el formato antiguo)
+    szVersion    "DAE-2"  (or "DAE-1", the old format)
     szAlgo       "A256GCM+RSA-OAEP+AONT"
-    szIv         12 bytes en base64
-    szTag        16 bytes en base64, el tag GCM
-    nBlockSize   tamanyo del cifrado completo
-    nHeadSize    cuantos bytes de ese cifrado van en el eHead
-    arrEncKeys   huella de clave publica -> base64 de RSA-OAEP(clave || localizador)
-    szPayload    base64 de los primeros nHeadSize bytes del cifrado
+    szIv         12 bytes in base64
+    szTag        16 bytes in base64, the GCM tag
+    nBlockSize   size of the complete ciphertext
+    nHeadSize    how many bytes of that ciphertext go in the eHead
+    arrEncKeys   pubkey fingerprint -> base64 of RSA-OAEP(key||locator)
+    szPayload    base64 of the first nHeadSize bytes of the ciphertext
 
-El cifrado completo es szPayload + el fichero eBody, en ese orden.
+The complete ciphertext is szPayload + the eBody file, in that order.
 
-LO IMPORTANTE, Y ES EL PUNTO DEL PROTOCOLO
+THE IMPORTANT PART, AND IT IS THE POINT OF THE PROTOCOL
 ------------------------------------------------------
-En DAE-2 la clave de 32 bytes que sale de arrEncKeys NO es la clave:
-viene enmascarada. La clave de verdad se obtiene asi:
+In DAE-2 the 32-byte key that comes out of arrEncKeys is NOT the key:
+it comes masked. The real key is obtained like this:
 
     mascara = sha256(b"DAE-AONT-v2" + cifrado_completo)
     clave   = clave_enmascarada XOR mascara
 
-Es decir: hace falta el cifrado ENTERO, hasta el ultimo byte, solo para
-averiguar la clave. A quien le falte un byte no obtiene la clave, y sin
-clave no descifra nada, ni un trozo. No es que le falte potencia de
-calculo: le faltan datos, y los datos que no existen no se calculan.
-Se llama transformacion todo-o-nada, y es la razon por la que interceptar
-una de las dos piezas no sirve absolutamente de nada.
+That is: the ENTIRE ciphertext is needed, down to the last byte, just
+to work out the key. Whoever is missing one byte does not get the key,
+and without the key nothing is decrypted, not even a fragment. It is
+not that they lack computing power: they lack data, and data that does
+not exist cannot be computed. It is called an all-or-nothing transform,
+and it is the reason why intercepting one of the two pieces is
+absolutely useless.
 
-DAE-1, el formato antiguo, no lo llevaba: su clave iba tal cual y su
-cabecera incluia szChecksum, el sha256 del cifrado completo. Se sigue
-abriendo para no dejar sin leer el correo ya repartido, pero con DAE-1
-quien interceptase el eHead y consiguiese la clave podia leer ese trozo
-del mensaje. Por eso se cambio.
+DAE-1, the old format, did not carry it: its key travelled as it was
+and its header included szChecksum, the sha256 of the complete
+ciphertext. It is still opened so as not to leave already delivered
+mail unread, but with DAE-1 whoever intercepted the eHead and got the
+key could read that fragment of the message. That is why it changed.
 
-Descifrado: AES-256-GCM. Las entradas de arrEncKeys se abren con tu
-clave privada (RSA-OAEP con SHA-1, que es lo que usa OpenSSL por
-defecto).
+Decryption: AES-256-GCM. The arrEncKeys entries are opened with your
+private key (RSA-OAEP with SHA-1, which is what OpenSSL uses by
+default).
 
-Los 32 bytes siguientes de esa misma entrada son el localizador del
-eBody. Van ahi, cifrados, para que nadie sepa donde esta la otra pieza
-sin tener tu clave privada.
+The next 32 bytes of that same entry are the eBody locator. They go
+there, encrypted, so that nobody knows where the other piece is
+without having your private key.
 
-Licencia: dominio publico. Copialo, cambialo, publicalo.
+License: public domain. Copy it, change it, publish it.
 """
 
 import argparse
@@ -101,8 +102,8 @@ AGENTE = "dae_open.py/1.0 (+https://doubleat.email)"
 VERSION_ACTUAL = "DAE-2"
 VERSIONES_VALIDAS = ("DAE-2", "DAE-1")
 
-# Etiqueta de dominio de la mascara todo-o-nada. Va dentro del resumen
-# para que ese valor no valga para ninguna otra cosa del protocolo.
+# Domain label of the all-or-nothing mask. It goes inside the digest
+# so that value is good for nothing else in the protocol.
 ETIQUETA_AONT = b"DAE-AONT-v2"
 LONGITUD_CLAVE = 32          # AES-256
 LONGITUD_LOCALIZADOR = 32
@@ -113,7 +114,7 @@ def aviso(texto):
 
 
 def cargar_clave_privada(ruta, contrasena):
-    """Lee la clave privada. Si esta protegida y no hay contrasena, la pide."""
+    """Reads the private key. If protected and no password, it asks."""
     with open(ruta, "rb") as f:
         datos = f.read()
 
@@ -134,10 +135,10 @@ def cargar_clave_privada(ruta, contrasena):
 
 def abrir_entrada(clave_privada, entradas):
     """
-    Prueba cada entrada de arrEncKeys hasta que una abre.
+    Tries every arrEncKeys entry until one opens.
 
-    Que fallen las demas es lo normal: un correo puede ir sellado para
-    varios destinatarios y solo una entrada es la tuya.
+    The rest failing is the normal thing: an email can be sealed for
+    several recipients and only one entry is yours.
     """
     for huella, sellado in entradas.items():
         try:
@@ -160,20 +161,20 @@ def abrir_entrada(clave_privada, entradas):
 
 def descargar_pieza(servidor, localizador):
     """
-    Pide la segunda pieza por su localizador.
-    
-    No se manda nada mas: ni quien eres, ni tu clave, ni de que mensaje
-    se trata. El localizador es la unica credencial, y solo lo tiene
-    quien ha podido abrir la cabecera.
+    Asks for the second piece by its locator.
+
+    Nothing else is sent: not who you are, not your key, not which
+    message it is about. The locator is the only credential, and only
+    whoever has been able to open the header has it.
     """
     url = "%s/ebody/%s" % (servidor.rstrip("/"), localizador.hex())
     print("Descargando la otra pieza de %s ..." % servidor)
 
-    # Nos identificamos con nuestro nombre. No es cosmetico: el
-    # user-agent que urllib pone por defecto ('Python-urllib/...') esta
-    # en las listas de bots de Cloudflare y devuelve 403. Y disfrazarse
-    # de navegador seria mentir en una herramienta cuyo argumento es
-    # precisamente que puedes leer lo que hace.
+    # We identify ourselves by our own name. This is not cosmetic: the
+    # user-agent urllib sets by default ('Python-urllib/...') is on
+    # Cloudflare's bot lists and gets a 403 back. And dressing up as a
+    # browser would be lying in a tool whose whole argument is
+    # precisely that you can read what it does.
     peticion = urllib.request.Request(url, headers={"User-Agent": AGENTE})
 
     try:
@@ -213,7 +214,7 @@ def main():
                         "quieres guardarla y no volver a depender del servidor")
     args = p.parse_args()
 
-    # --- las dos piezas ---------------------------------------------
+    # --- the two pieces ---------------------------------------------
     try:
         with open(args.ehead, "rb") as f:
             cabecera = json.loads(f.read().decode("utf-8").strip())
@@ -221,10 +222,15 @@ def main():
         sys.exit("No se ha podido leer la cabecera: %s" % e)
 
     if cabecera.get("szVersion") not in VERSIONES_VALIDAS:
-        aviso("AVISO: la cabecera dice version '%s' y esperabamos '%s'. Se sigue."
-              % (cabecera.get("szVersion"), VERSION_ESPERADA))
+        # VERSION_ESPERADA no existe: quedo colgando al anyadir DAE-2, y
+        # esta rama reventaba con un traceback en lugar de avisar. Solo
+        # se llega aqui con un formato desconocido, que es justo cuando
+        # mas falta hace entender el mensaje.
+        aviso("AVISO: la cabecera dice version '%s' y aqui se entienden "
+              "'%s'. Se sigue de todas formas."
+              % (cabecera.get("szVersion"), "', '".join(VERSIONES_VALIDAS)))
 
-    # --- tu clave abre la entrada que te corresponde -----------------
+    # --- your key opens the entry that is yours ----------------------
     clave_privada = cargar_clave_privada(args.clave, args.contrasena)
     clave_aes, localizador, huella = abrir_entrada(
         clave_privada, cabecera.get("arrEncKeys", {}))
@@ -237,7 +243,7 @@ def main():
     print("Abierto con la clave de huella %s" % huella[:16])
     print("La otra pieza esta en %s" % localizador.hex()[:16])
 
-    # --- la segunda pieza: la tienes o se baja ------------------------
+    # --- the second piece: you have it or it gets downloaded ----------
     if args.ebody:
         try:
             with open(args.ebody, "rb") as f:
@@ -252,7 +258,7 @@ def main():
                 f.write(cuerpo)
             print("Pieza guardada en %s" % ruta)
 
-    # --- las dos piezas, una detras de otra --------------------------
+    # --- the two pieces, one after the other -------------------------
     cifrado = base64.b64decode(cabecera["szPayload"]) + cuerpo
 
     esperado = cabecera.get("nBlockSize")
@@ -260,29 +266,30 @@ def main():
         aviso("AVISO: el mensaje deberia medir %s bytes y mide %d. "
               "Puede que falte parte del eBody." % (esperado, len(cifrado)))
 
-    # DAE-1 llevaba la huella en la cabecera. Para ese formato ya no es
-    # ningun secreto, asi que se comprueba y ya esta.
+    # DAE-1 carried the digest in the header. For that format it is no
+    # secret any more, so it is checked and that is that.
     checksum = cabecera.get("szChecksum")
     if checksum and hashlib.sha256(cifrado).hexdigest() != checksum:
         aviso("AVISO: la huella del mensaje no cuadra. Sigue el intento, "
               "pero algo se ha alterado o esta incompleto.")
 
-    # --- quitar la mascara (DAE-2) ------------------------------------
-    # Aqui es donde el protocolo cumple lo que promete. La clave que
-    # venia en la cabecera no sirve para nada por si sola: hay que
-    # deshacerla con el resumen del cifrado completo, y para eso hacen
-    # falta las dos piezas enteras. Si falta un solo byte sale otra
-    # clave, el descifrado de abajo falla, y no se lee nada.
+    # --- remove the mask (DAE-2) --------------------------------------
+    # This is where the protocol delivers what it promises. The key
+    # that came in the header is good for nothing on its own: it has
+    # to be undone with the digest of the complete ciphertext, and for
+    # that both whole pieces are needed. If a single byte is missing a
+    # different key comes out, the decryption below fails, and nothing
+    # is read.
     if cabecera.get("szVersion") == VERSION_ACTUAL:
         mascara = hashlib.sha256(ETIQUETA_AONT + cifrado).digest()
         clave_aes = bytes(a ^ b for a, b in zip(clave_aes, mascara))
 
-    # --- descifrar ---------------------------------------------------
+    # --- decrypt -----------------------------------------------------
     iv = base64.b64decode(cabecera["szIv"])
     tag = base64.b64decode(cabecera["szTag"])
 
     try:
-        # AESGCM espera el tag pegado al final del cifrado
+        # AESGCM expects the tag stuck to the end of the ciphertext
         claro = AESGCM(clave_aes).decrypt(iv, cifrado + tag, None)
     except Exception:
         sys.exit("El mensaje no se ha podido descifrar.\n"

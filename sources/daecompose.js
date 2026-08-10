@@ -1,19 +1,19 @@
 /**
- * DAE - Enviar cifrando en el navegador
+ * DAE - Sending with the encryption done in the browser
  *
- * Cuando esta activado, el correo se monta y se cierra aqui, y al
- * servidor le llegan las dos piezas ya cifradas. Sin esto, el servidor
- * ve el mensaje y los adjuntos en claro justo antes de cifrarlos.
+ * When it is switched on, the mail is built and sealed here, and the
+ * server gets the two pieces already encrypted. Without this, the server
+ * sees the message and attachments in the clear just before encrypting.
  *
- * VA APAGADO POR DEFECTO, y no por prudencia excesiva: hoy tiene una
- * pega de verdad, y esta escrita en la pantalla en lugar de escondida.
- * El correo sale SIN FIRMAR, porque firmar necesita la clave privada del
- * remitente y aqui no esta: en custodia gestionada la guarda el servidor.
- * Quien reciba el mensaje lo vera como no firmado.
+ * IT IS OFF BY DEFAULT, and not out of excessive caution: today it has
+ * a real drawback, and it is written on the screen instead of hidden.
+ * The mail goes out UNSIGNED, because signing needs the private key of
+ * the sender and it is not here: under managed custody the server keeps
+ * it. Whoever receives the message will see it as not signed.
  *
- * Quien quiera las dos cosas a la vez, cifrar fuera del servidor Y
- * firmar, tiene dae_send.py, que corre en su ordenador y si tiene la
- * clave. Ver /?page=verificar.
+ * Whoever wants both things at once, encrypting outside the server AND
+ * signing, has dae_send.py, which runs on their computer and does have
+ * the key. See /?page=verificar.
  */
 (function () {
     'use strict';
@@ -45,11 +45,11 @@
     }
 
     /**
-     * El identificador de una direccion en el directorio.
+     * The identifier of an address in the directory.
      *
-     * Solo la parte local, en minusculas. No se pregunta por la
-     * direccion sino por su resumen, para que nadie pueda recorrer el
-     * directorio probando nombres.
+     * Only the local part, lowercased. What is asked for is not the
+     * address but its digest, so that nobody can walk the directory
+     * trying out names.
      */
     async function hu(szEmail) {
         var szLocal = szEmail.trim().toLowerCase().split('@')[0];
@@ -73,17 +73,17 @@
     }
 
     /**
-     * Firma el mensaje, si la llave del usuario esta cargada aqui.
+     * Signs the message, if the user key is loaded here.
      *
-     * Solo pasa en custodia propia: en custodia gestionada la llave
-     * privada la guarda el servidor y aqui no hay nada con que firmar.
+     * That only happens under own custody: under managed custody the
+     * server keeps the private key and here there is nothing to sign with.
      *
-     * La firma va DENTRO de lo que luego se cifra. Fuera le diria a quien
-     * intercepte el correo quien lo escribe, que es justo lo que el
-     * protocolo evita.
+     * The signature goes INSIDE what is then encrypted. Outside it would
+     * tell whoever intercepts the mail who wrote it, which is exactly
+     * what the protocol avoids.
      *
-     * El sobre tiene que salir igual que el de clsSign::wrap() o el
-     * destinatario vera "sin firmar" en un correo que si lo va.
+     * The envelope has to come out the same as the one from clsSign::wrap()
+     * or the recipient will see "unsigned" on a mail that is signed.
      */
     async function firmarSiSePuede(arrMime, szYo) {
         if (!window.daeCrypto || !window.daeCrypto.puedeFirmar
@@ -91,10 +91,10 @@
             return arrMime;
         }
 
-        // La huella es la de la clave PUBLICA, y de una privada no se
-        // saca en WebCrypto. Se pide al directorio, que es publica por
-        // definicion. Asi no hay que migrar los .daekey ya exportados,
-        // que no la llevan dentro.
+        // The fingerprint is that of the PUBLIC key, and WebCrypto does
+        // not get it out of a private one. It is asked of the directory,
+        // which is public by definition. That way the .daekey files
+        // already exported, which do not carry it inside, need no migrating.
         var szPem = await clavePublicaDe(szYo);
         var arrDer = deB64Pem(szPem);
         var szHuella = hex(new Uint8Array(await crypto.subtle.digest('SHA-256', arrDer)));
@@ -144,13 +144,13 @@
     }
 
     objForm.addEventListener('submit', async function (objEv) {
-        if (!objCasilla.checked) { return; }   // camino de siempre
+        if (!objCasilla.checked) { return; }   // the usual path
 
         var arrPara = direcciones();
-        // Solo direcciones @@: una normal no se puede cifrar, y mezclar
-        // las dos cosas en un envio es justo lo que el servidor prohibe.
+        // Only @@ addresses: a normal one cannot be encrypted, and
+        // mixing the two in one send is just what the server forbids.
         if (arrPara.length === 0 || arrPara.some(function (sz) { return sz.indexOf('@@') < 0; })) {
-            return;   // que decida el servidor y avise como siempre
+            return;   // let the server decide and warn as always
         }
 
         objEv.preventDefault();
@@ -199,9 +199,9 @@
 
             if (!objJson.bOk) { throw new Error(objJson.szError || 'no_enviado'); }
 
-            // El aviso de cambio de llave llega en la respuesta. Aqui no
-            // se puede parar el envio, que ya ha salido, asi que al menos
-            // se cuenta: callarlo seria peor.
+            // The key change warning comes back in the response. Here
+            // the send cannot be stopped, it has already gone out, so
+            // at least it gets told: keeping quiet would be worse.
             if (objJson.arrAvisos && objJson.arrAvisos.length) {
                 alert((objCasilla.dataset.avisollave || '') + '\n\n'
                       + objJson.arrAvisos.map(function (a) { return a.szEmail; }).join('\n'));

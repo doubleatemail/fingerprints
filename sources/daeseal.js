@@ -1,24 +1,25 @@
 /**
- * DAE - Sellar un correo puzzle EN EL NAVEGADOR
+ * DAE - Seal a puzzle email IN THE BROWSER
  *
- * Hasta ahora el bloque se construia en el servidor: clsAtAt llamaba a
- * clsEBlock::build() con el texto y los adjuntos en claro. Es decir, el
- * servidor veia el mensaje entero justo antes de cifrarlo. Aqui se hace
- * lo mismo en la maquina de quien escribe, y al servidor solo le llegan
- * las dos piezas ya cifradas.
+ * Until now the block was built on the server: clsAtAt called
+ * clsEBlock::build() with the text and the attachments in the clear.
+ * That is, the server saw the whole message right before encrypting it.
+ * Here the same thing is done on the machine of whoever writes, and all
+ * that reaches the server is the two already encrypted pieces.
  *
- * Gana el usuario, porque el mensaje no pasa en claro por nuestra parte,
- * y gana el servidor, que se quita de encima cifrar cada adjunto.
+ * The user wins, because the message does not pass in the clear through
+ * our side, and the server wins, as it gets rid of encrypting every
+ * attachment.
  *
- * DEBE PRODUCIR EXACTAMENTE LO MISMO QUE clsEBlock::build(). Si las dos
- * implementaciones se separan un byte, el correo se abre en una y no en
- * la otra. Hay prueba cruzada en tests/.
+ * IT MUST PRODUCE EXACTLY THE SAME AS clsEBlock::build(). If the two
+ * implementations drift apart by one byte, the mail opens in one and not
+ * in the other. There is a cross test in tests/.
  *
- * LIMITE QUE NO SE OCULTA A NADIE: este fichero lo sirve nuestro
- * servidor. Un servidor comprometido podria mandar una version que se
- * chive. Esto reduce la exposicion diaria, NO elimina la confianza.
- * Quien no quiera confiar tiene dae_send.py y dae_open.py, que se leen
- * enteros y funcionan sin nosotros. Ver /?page=verificar.
+ * A LIMIT THAT IS HIDDEN FROM NOBODY: this file is served by our
+ * server. A compromised server could send a version that snitches. This
+ * reduces the daily exposure, it does NOT remove the trust. Whoever
+ * does not want to trust has dae_send.py and dae_open.py, which can be
+ * read end to end and work without us. See /?page=verificar.
  */
 window.daeSeal = (function () {
     'use strict';
@@ -50,25 +51,26 @@ window.daeSeal = (function () {
         return s;
     }
 
-    /** El cuerpo de un PEM, sin cabeceras ni saltos: los bytes DER. */
+    /** The body of a PEM, no headers and no breaks: the DER bytes. */
     function der(szPem) {
         return deB64(szPem.replace(/-----[^-]+-----/g, '').replace(/\s+/g, ''));
     }
 
     /**
-     * La huella tiene que salir igual que en clsKeys::fingerprint():
-     * SHA-256 en hexadecimal sobre los bytes DER de la clave publica.
-     * Es la que indexa arrEncKeys, asi que si no coincide el
-     * destinatario no encuentra su entrada.
+     * The fingerprint has to come out the same as in
+     * clsKeys::fingerprint(): SHA-256 in hex over the DER bytes of the
+     * public key. It is the one that indexes arrEncKeys, so if it does
+     * not match the recipient does not find their entry.
      */
     async function huella(szPem) {
         return hex(new Uint8Array(await crypto.subtle.digest('SHA-256', der(szPem))));
     }
 
     /**
-     * RSA-OAEP con SHA-1, que es lo que usa OpenSSL por defecto y por
-     * tanto lo que hay en todo el correo ya repartido. Cambiarlo aqui
-     * dejaria los mensajes ilegibles para el resto del sistema.
+     * RSA-OAEP with SHA-1, which is what OpenSSL uses by default and
+     * therefore what is in all the mail already delivered. Changing it
+     * here would leave the messages unreadable for the rest of the
+     * system.
      */
     async function importarPublica(szPem) {
         return crypto.subtle.importKey(
@@ -78,36 +80,36 @@ window.daeSeal = (function () {
     }
 
     /**
-     * Sella un mensaje para una o varias claves publicas.
+     * Seals a message for one or several public keys.
      *
-     * @param {Uint8Array} arrPlain  el MIME interior, ya montado
-     * @param {string[]}   arrPems   claves publicas de los destinatarios
+     * @param {Uint8Array} arrPlain  the inner MIME, already assembled
+     * @param {string[]}   arrPems   public keys of the recipients
      * @returns {{szHead:string, arrBody:Uint8Array, szBodyId:string}}
      */
     async function sellar(arrPlain, arrPems) {
         if (!arrPlain || arrPlain.length === 0) { throw new Error('mensaje_vacio'); }
         if (!arrPems || arrPems.length === 0)   { throw new Error('sin_claves'); }
 
-        // 1. clave y IV nuevos para ESTE mensaje y ninguno mas
+        // 1. fresh key and IV for THIS message and no other one
         var arrKey = crypto.getRandomValues(new Uint8Array(32));
         var arrIv  = crypto.getRandomValues(new Uint8Array(12));
 
         var objAes = await crypto.subtle.importKey(
             'raw', arrKey, { name: 'AES-GCM' }, false, ['encrypt']);
 
-        // 2. cifrar. WebCrypto devuelve el tag pegado al final; el resto
-        //    del sistema los lleva separados, asi que se parten aqui.
+        // 2. encrypt. WebCrypto returns the tag stuck at the end; the
+        //    rest of the system carries them apart, so they split here.
         var arrConTag = new Uint8Array(await crypto.subtle.encrypt(
             { name: 'AES-GCM', iv: arrIv, tagLength: 128 }, objAes, arrPlain));
 
         var arrCifrado = arrConTag.slice(0, arrConTag.length - 16);
         var arrTag     = arrConTag.slice(arrConTag.length - 16);
 
-        // 3. TRANSFORMACION TODO-O-NADA. La clave no viaja: viaja
-        //    enmascarada con el resumen del cifrado ENTERO, asi que para
-        //    obtenerla hacen falta las dos piezas completas. A quien le
-        //    falte un byte no le sale la clave, y sin clave no descifra
-        //    ni un bit. Ver 06_AT_AT_PROTOCOL.md, seccion 3.bis.
+        // 3. ALL-OR-NOTHING TRANSFORM. The key does not travel: it
+        //    travels masked with the digest of the WHOLE ciphertext, so
+        //    getting it needs both pieces complete. Whoever is missing
+        //    a byte does not get the key, and without the key they do
+        //    not decrypt one bit. See 06_AT_AT_PROTOCOL.md, sec 3.bis.
         var arrEtiqueta = new TextEncoder().encode(ETIQUETA_AONT);
         var arrParaHash = new Uint8Array(arrEtiqueta.length + arrCifrado.length);
         arrParaHash.set(arrEtiqueta, 0);
@@ -119,13 +121,14 @@ window.daeSeal = (function () {
         var arrKeyOut = new Uint8Array(32);
         for (var i = 0; i < 32; i++) { arrKeyOut[i] = arrKey[i] ^ arrMascara[i]; }
 
-        // 4. localizador opaco de la segunda pieza
+        // 4. opaque locator of the second piece
         var arrBodyId = crypto.getRandomValues(new Uint8Array(32));
         var szBodyId  = hex(arrBodyId);
 
-        // 5. una operacion RSA por destinatario. Cada una lleva la clave
-        //    ENMASCARADA y el localizador: el localizador sale entero,
-        //    porque hay que saber que pieza pedir antes de tenerla.
+        // 5. one RSA operation per recipient. Each one carries the
+        //    MASKED key and the locator: the locator goes out whole,
+        //    because you must know which piece to ask for before having
+        //    it.
         var arrSemilla = new Uint8Array(64);
         arrSemilla.set(arrKeyOut, 0);
         arrSemilla.set(arrBodyId, 32);
@@ -138,7 +141,7 @@ window.daeSeal = (function () {
             objEncKeys[await huella(arrPems[j])] = b64(arrSellada);
         }
 
-        // 6. partir. SIEMPRE, y nunca el bloque entero en la cabecera.
+        // 6. split. ALWAYS, and never the whole block in the header.
         var nBlock = arrCifrado.length;
         var nHead  = Math.min(MAX_HEAD, Math.floor(nBlock * RATIO_HEAD));
         nHead = Math.max(1, Math.min(nHead, nBlock - 1));
@@ -146,9 +149,10 @@ window.daeSeal = (function () {
         var arrPayload = arrCifrado.slice(0, nHead);
         var arrBody    = arrCifrado.slice(nHead);
 
-        // El orden de las claves importa: el JSON tiene que salir igual
-        // que el de PHP para que nada dependa de como lo serialice cada
-        // uno. szChecksum NO va: era el valor que quita la mascara.
+        // The order of the keys matters: the JSON has to come out the
+        // same as the PHP one so that nothing depends on how each side
+        // serialises it. szChecksum is NOT in: it was the value that
+        // takes off the mask.
         var objHead = {
             szVersion:  VERSION,
             szAlgo:     ALGO,

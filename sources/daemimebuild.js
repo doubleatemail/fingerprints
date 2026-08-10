@@ -1,41 +1,41 @@
 /**
- * DAE - Montar el MIME de un correo EN EL NAVEGADOR
+ * DAE - Building the MIME of a mail IN THE BROWSER
  *
- * daemime.js sabe LEER un correo ya descifrado. Esto es lo contrario:
- * construye el mensaje, con sus adjuntos, para que lo cifre daeseal.js
- * antes de que salga de aqui.
+ * daemime.js knows how to READ a mail already decrypted. This is the
+ * opposite: it builds the message, with its attachments, so that
+ * daeseal.js encrypts it before it leaves here.
  *
- * Sin esto el cifrado en el navegador no sirve de nada: habria que
- * mandarle el texto y los ficheros al servidor para que montase el
- * mensaje, y entonces ya los ha visto, que es justo lo que se evita.
+ * Without this, encrypting in the browser is worth nothing: you would
+ * have to send the text and the files to the server so it builds the
+ * message, and by then it has seen them, which is just what we avoid.
  *
- * Lo monta clsAtAt::buildInnerMime() con PHPMailer en el servidor. Lo de
- * aqui no tiene que salir byte a byte igual que aquello: lo que tiene que
- * salir es un MIME correcto, que lo abra cualquier programa de correo y
- * que lo entienda clsMime al mostrarlo en pantalla. Hay prueba de eso.
+ * On the server clsAtAt::buildInnerMime() builds it with PHPMailer.
+ * What comes out of here need not match that byte for byte: what has
+ * to come out is correct MIME, that any mail program opens and that
+ * clsMime understands on screen. There is a test for that.
  *
- * Se escribe a mano, sin biblioteca: son cuatro reglas y meter una
- * dependencia significaria que el usuario tiene que revisar tambien esa
- * biblioteca antes de fiarse. La pagina de comprobar publica la huella de
- * este fichero, y cuanto mas corto, mejor se lee.
+ * Written by hand, no library: it is four rules, and adding a
+ * dependency would mean the user has to review that library too
+ * before trusting it. The verify page publishes the fingerprint of
+ * this file, and the shorter it is, the better it reads.
  */
 window.daeMimeBuild = (function () {
     'use strict';
 
     /**
-     * Cabecera con texto que puede llevar acentos.
+     * Header with text that may carry accents.
      *
-     * Un asunto con enyes no puede viajar tal cual: el correo es de 1982
-     * y las cabeceras son ASCII. Se codifica al estilo RFC 2047. Si es
-     * ASCII puro se deja como esta, que es mas legible para quien mire
-     * el mensaje en crudo.
+     * A subject with enyes cannot travel as it is: mail is from 1982
+     * and headers are ASCII. It gets encoded RFC 2047 style. If it is
+     * pure ASCII it is left alone, which reads better for whoever
+     * looks at the raw message.
      */
     function cabecera(nombre, valor) {
         valor = String(valor === undefined || valor === null ? '' : valor);
 
-        // Nada de saltos de linea en una cabecera: ahi es por donde se
-        // cuelan cabeceras falsas (inyeccion), como un Bcc que el
-        // remitente no ha escrito.
+        // No line breaks in a header: that is the way fake headers
+        // slip in (injection), like a Bcc that the sender never
+        // wrote.
         valor = valor.replace(/[\r\n]+/g, ' ').trim();
 
         if (/^[\x20-\x7E]*$/.test(valor)) {
@@ -52,7 +52,7 @@ window.daeMimeBuild = (function () {
         return window.btoa(s);
     }
 
-    /** base64 en lineas de 76, como manda el formato. */
+    /** base64 in lines of 76, as the format demands. */
     function b64Lineas(arr) {
         var sz = b64(arr);
         var out = '';
@@ -72,10 +72,10 @@ window.daeMimeBuild = (function () {
     }
 
     /**
-     * La fecha, en el formato del correo y siempre en UTC.
+     * The date, in mail format and always in UTC.
      *
-     * A proposito: la zona horaria de quien escribe dice donde esta, y
-     * este mensaje va cifrado precisamente para no contar de mas.
+     * On purpose: the timezone of whoever writes says where they are,
+     * and this message goes encrypted precisely so as not to tell more.
      */
     function fecha() {
         var arrDia = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -112,11 +112,11 @@ window.daeMimeBuild = (function () {
     function texto(sz) { return new TextEncoder().encode(sz); }
 
     /**
-     * Monta el mensaje entero.
+     * Builds the whole message.
      *
      * @param {object} obj  {szDe, arrPara, szAsunto, szCuerpo, arrFicheros}
-     *                      arrFicheros son objetos File del formulario
-     * @returns {Uint8Array} el MIME listo para cifrar
+     *                      arrFicheros are File objects from the form
+     * @returns {Uint8Array} the MIME ready to encrypt
      */
     async function montar(obj) {
         var arrPara = obj.arrPara || [];
@@ -131,8 +131,8 @@ window.daeMimeBuild = (function () {
 
         var arrCuerpo = texto(String(obj.szCuerpo === undefined ? '' : obj.szCuerpo));
 
-        // Sin adjuntos no hace falta montar un multipart: un mensaje de
-        // una sola parte se lee igual y ocupa menos.
+        // With no attachments there is no need for a multipart: a
+        // single part message reads the same and takes up less.
         if (arrFich.length === 0) {
             szCab += 'Content-Type: text/plain; charset=UTF-8\r\n';
             szCab += 'Content-Transfer-Encoding: base64\r\n\r\n';
@@ -155,8 +155,8 @@ window.daeMimeBuild = (function () {
             var arrDat = await leer(objF);
             var szTipo = objF.type || 'application/octet-stream';
 
-            // El nombre entre comillas y sin comillas dentro, o se rompe
-            // la cabecera y el adjunto llega sin nombre.
+            // The name in quotes and with no quotes inside, or the
+            // header breaks and the attachment arrives with no name.
             var szNom = String(objF.name || 'adjunto').replace(/["\r\n]/g, '_');
 
             arrPartes.push(texto(
