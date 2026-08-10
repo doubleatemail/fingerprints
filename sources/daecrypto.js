@@ -54,6 +54,14 @@ window.daeCrypto = (function () {
     // descifrado en lugar de dos.
     var PIN_DEFECTO = '000000';
 
+    // Etiqueta de dominio de la prueba de lectura. DISTINTA de la del
+    // todo-o-nada ('DAE-AONT-v2') a proposito: los dos resumenes se
+    // calculan sobre material del mismo mensaje, y sin etiquetas
+    // separadas uno podria valer como el otro. El que sobra seria grave,
+    // porque quien tuviera el resumen de la mascara podria fabricar el
+    // aviso "ya lo he leido" sin haber leido nada.
+    var ETIQUETA_LECTURA = 'DAE-READ-1';
+
     // Limites del nPinIter que llega en la cabecera. Es un numero de
     // fuera: un cero deja el PIN en nada y un absurdo cuelga la pestanya
     // hasta que la maten.
@@ -539,7 +547,87 @@ window.daeCrypto = (function () {
             throw new Error('alterado');
         }
 
+        // EL AVISO DE LECTURA. Va aqui y no antes: el tag ya ha
+        // verificado, o sea que esto es una lectura de verdad. Ver
+        // 06_AT_AT_PROTOCOL.md 9.bis.
+        //
+        // Sin esto, un correo marcado "se destruye al leerlo" abierto en
+        // custodia propia contra OTRO servidor no se destruye: el
+        // servidor de quien envio no se entera de nada y la pieza solo
+        // muere por plazo. Este navegador es el unico que tiene la clave
+        // desenmascarada, asi que es el unico que puede demostrarlo.
+        //
+        // No se espera y no se mira el resultado: el mensaje ya esta
+        // descifrado y el lector lo tiene delante. Colgar la pantalla de
+        // alguien -o peor, no ensenyarle su correo- porque un tercer
+        // servidor no contesta seria cambiar una promesa por otra peor.
+        // Si el aviso no llega, la pieza caduca por plazo, que es la red
+        // que hay debajo de todo esto y no se quita nunca.
+        avisarLectura(szDonde, szLocaliza, arrClaveAes);
+
         return window.daeMime.texto(new Uint8Array(arrClaro));
+    }
+
+    /**
+     * La prueba de que este mensaje se ha leido de verdad.
+     *
+     *     token = sha256( "DAE-READ-1" || k || szBodyId )
+     *
+     * k son los 32 bytes de la clave YA DESENMASCARADA, y el
+     * localizador van sus 64 caracteres hexadecimales en minusculas: la
+     * etiqueta y el localizador en texto, la clave en bytes crudos. Las
+     * tres longitudes son fijas, asi que no hay ambiguedad posible.
+     *
+     * Tiene que dar EXACTAMENTE lo mismo que clsEBlock::pruebaLectura()
+     * en el servidor. Si no diera lo mismo, el aviso viajaria bien
+     * formado, el otro extremo lo compararia bien, no cuadraria, y el
+     * correo efimero seguiria muriendo solo por plazo sin que nadie
+     * viera un error en ningun sitio.
+     */
+    async function pruebaLectura(arrClave, szLocaliza) {
+        var arrEtiqueta = new TextEncoder().encode(ETIQUETA_LECTURA);
+        var arrId       = new TextEncoder().encode(szLocaliza);
+
+        var arrTodo = new Uint8Array(
+            arrEtiqueta.length + arrClave.length + arrId.length);
+        arrTodo.set(arrEtiqueta, 0);
+        arrTodo.set(arrClave, arrEtiqueta.length);
+        arrTodo.set(arrId, arrEtiqueta.length + arrClave.length);
+
+        return hex(new Uint8Array(await crypto.subtle.digest('SHA-256', arrTodo)));
+    }
+
+    /**
+     * Le dice al servidor donde vive la pieza que su correo se ha leido.
+     *
+     * SE TRAGA CUALQUIER FALLO A PROPOSITO. Esto es un extra que adelanta
+     * un borrado; no puede romper una lectura que ya ha salido bien. Si
+     * el servidor no contesta, contesta mal, o el navegador corta la
+     * peticion por CORS, aqui no pasa nada: el plazo sigue estando.
+     *
+     * Va por POST y como formulario, no como JSON, para que el navegador
+     * lo trate como peticion simple y no pida preflight. Y por POST y no
+     * por GET porque el token es la unica credencial que hay: en una URL
+     * acabaria escrito en el log de accesos del servidor, en el historial
+     * y en cualquier proxy por el camino.
+     */
+    async function avisarLectura(szDonde, szLocaliza, arrClave) {
+        try {
+            var szToken = await pruebaLectura(arrClave, szLocaliza);
+
+            var objCuerpo = new URLSearchParams();
+            objCuerpo.set('id', szLocaliza);
+            objCuerpo.set('token', szToken);
+
+            await fetch(szDonde + '/ebody/read', {
+                method:      'POST',
+                credentials: 'omit',
+                body:        objCuerpo
+            });
+        } catch (e) {
+            // Ni un aviso por pantalla. Quien lee no tiene nada que
+            // hacer con esto y no es su problema.
+        }
     }
 
     return {
@@ -550,6 +638,10 @@ window.daeCrypto = (function () {
         // Se saca para los tests: tiene que decir exactamente lo mismo
         // que clsKeyFetch::dominioValido() en el servidor.
         dominioValido: dominioValido,
+        // Y esta, por lo mismo: tiene que dar byte a byte lo mismo que
+        // clsEBlock::pruebaLectura(). Si divergen, el correo efimero
+        // deja de destruirse entre servidores y no salta ningun error.
+        pruebaLectura: pruebaLectura,
         lista:    lista,
         duenyo:   duenyo,
         olvidar:  olvidar

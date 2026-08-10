@@ -260,6 +260,13 @@
             objDatos.append('szTo', arrPara.join(', '));
             objDatos.append('szHead', objSello.szHead);
             objDatos.append('szBodyId', objSello.szBodyId);
+            // El resumen de la prueba de lectura. Lo calcula esta
+            // pestanya porque es la unica que ha tenido la clave del
+            // mensaje: el servidor sella nada aqui, solo reparte. Sin
+            // enviarlo, un correo "se destruye al leerlo" escrito desde
+            // esta pantalla no se destruiria cuando lo lea alguien de
+            // otro servidor, y no lo diria nadie.
+            objDatos.append('szReadProof', objSello.szReadProof || '');
             var objRet = document.querySelector('[name=szRetention]:checked')
                       || document.querySelector('[name=szRetention]');
             if (objRet) { objDatos.append('szRetention', objRet.value); }

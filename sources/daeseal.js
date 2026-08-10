@@ -31,6 +31,12 @@ window.daeSeal = (function () {
     'use strict';
 
     var ETIQUETA_AONT = 'DAE-AONT-v2';
+
+    // Etiqueta de dominio de la prueba de lectura. Distinta de la de
+    // arriba a proposito: los dos resumenes salen de material del mismo
+    // mensaje, y sin etiquetas separadas uno podria valer como el otro.
+    var ETIQUETA_LECTURA = 'DAE-READ-1';
+
     var VERSION       = 'DAE-5';
     var ALGO          = 'A256GCM+X25519+AONT+PIN+ORIGIN';
     var MAX_HEAD      = 102400;   // 100 KB
@@ -311,7 +317,7 @@ window.daeSeal = (function () {
      * @param {Uint8Array[]} arrPubs   X25519 keys of the recipients
      * @param {string}       [szPin]   el segundo canal, si lo hay
      * @param {string}       szOrigen  dominio donde quedara el eBody
-     * @returns {{szHead:string, arrBody:Uint8Array, szBodyId:string}}
+     * @returns {{szHead:string, arrBody:Uint8Array, szBodyId:string, szReadProof:string}}
      */
     async function sellar(arrPlain, arrPubs, szPin, szOrigen) {
         if (!arrPlain || arrPlain.length === 0) { throw new Error('mensaje_vacio'); }
@@ -437,11 +443,62 @@ window.daeSeal = (function () {
             szPayload:  b64(arrPayload)
         };
 
+        // EL RESUMEN DE LA PRUEBA DE LECTURA, para que el servidor lo
+        // guarde junto a la fila. Se calcula AQUI porque este navegador
+        // es el unico que ha tenido arrKey en la mano: quien reparte el
+        // correo no ve el mensaje ni su clave, asi que no puede sacarlo
+        // de nada de lo que le llega.
+        //
+        // Sin esto, un correo sellado aqui y marcado "se destruye al
+        // leerlo" solo caducaria por plazo cuando lo lea alguien de otro
+        // servidor. Ver 06_AT_AT_PROTOCOL.md 9.bis.
+        //
+        // Sale el RESUMEN y no el token: lo que se guarda no puede ser
+        // lo que se envia, o la base de datos del que reparte seria la
+        // llave del boton de destruccion.
+        var szToken = await pruebaLectura(arrKey, szBodyId);
+
         return {
-            szHead:   JSON.stringify(objHead),
-            arrBody:  arrBody,
-            szBodyId: szBodyId
+            szHead:      JSON.stringify(objHead),
+            arrBody:     arrBody,
+            szBodyId:    szBodyId,
+            szReadProof: await resumenPrueba(szToken)
         };
+    }
+
+    /**
+     * La prueba de que este mensaje se ha leido.
+     *
+     *     token = sha256( "DAE-READ-1" || k || szBodyId )
+     *
+     * La etiqueta y el localizador en TEXTO, la clave en BYTES CRUDOS.
+     * Las tres longitudes son fijas, asi que no hay ambiguedad. Tiene
+     * que dar exactamente lo mismo que clsEBlock::pruebaLectura() en el
+     * servidor y que daecrypto.js al abrir; si divergiera, el aviso de
+     * lectura viajaria bien formado y no cuadraria nunca, sin que
+     * saltara ningun error en ningun sitio.
+     */
+    async function pruebaLectura(arrClave, szBodyId) {
+        var arrEtiqueta = new TextEncoder().encode(ETIQUETA_LECTURA);
+        var arrId       = new TextEncoder().encode(szBodyId);
+
+        var arrTodo = new Uint8Array(
+            arrEtiqueta.length + arrClave.length + arrId.length);
+        arrTodo.set(arrEtiqueta, 0);
+        arrTodo.set(arrClave, arrEtiqueta.length);
+        arrTodo.set(arrId, arrEtiqueta.length + arrClave.length);
+
+        return hex(new Uint8Array(await crypto.subtle.digest('SHA-256', arrTodo)));
+    }
+
+    /**
+     * El resumen del token, que es lo unico que se le entrega al
+     * servidor: sha256 sobre el token en su forma de TEXTO hexadecimal
+     * en minusculas, que es como viaja.
+     */
+    async function resumenPrueba(szToken) {
+        var arrTok = new TextEncoder().encode(szToken);
+        return hex(new Uint8Array(await crypto.subtle.digest('SHA-256', arrTok)));
     }
 
     return {
@@ -451,6 +508,10 @@ window.daeSeal = (function () {
         // que clsKeyFetch::dominioValido(). Dos reglas que se separen
         // producen correo que un lado sella y el otro no abre.
         dominioValido: dominioValido,
+        // Y estas dos, por lo mismo: tienen que dar byte a byte lo que
+        // dan clsEBlock::pruebaLectura() y clsEBlock::resumenPrueba().
+        pruebaLectura: pruebaLectura,
+        resumenPrueba: resumenPrueba,
         VERSION: VERSION
     };
 })();

@@ -173,6 +173,7 @@ import argparse
 import base64
 import urllib.request
 import urllib.error
+import urllib.parse
 import hashlib
 import json
 import sys
@@ -208,6 +209,14 @@ TLD_PROHIBIDOS = ("test", "invalid", "example", "local",
 # Domain label of the all-or-nothing mask. It goes inside the digest
 # so that value is good for nothing else in the protocol.
 ETIQUETA_AONT = b"DAE-AONT-v2"
+
+# Domain label of the READ PROOF (06_AT_AT_PROTOCOL.md 9.bis).
+# Deliberately different from the one above: both digests are computed
+# over material from the same message, and without separate labels one
+# could pass for the other. The spare one would be the serious case:
+# whoever held the mask digest could forge the "I have read it" notice
+# without having read anything.
+ETIQUETA_LECTURA = b"DAE-READ-1"
 
 # The PIN of the mail that carries no real PIN. Public on purpose: it
 # is written here and in every other implementation.
@@ -417,6 +426,59 @@ def descargar_pieza(servidor, localizador):
                  % (servidor, e.reason))
 
 
+def avisar_lectura(servidor, localizador, clave_aes):
+    """Tells the server holding the piece that its mail has been read.
+
+    This is what makes "destroyed on reading" actually destroy the mail
+    when the reader is on a different server. Until this existed, the
+    sender's row never heard about the read and the piece only died
+    later, by deadline.
+
+        token = sha256("DAE-READ-1" || k || szBodyId)
+        POST https://<servidor>/ebody/read    id=...&token=...
+
+    Only someone who recovered k can compute it, and recovering k takes
+    both whole pieces plus the private key plus the PIN: exactly the
+    three things needed to read, not one fewer. That is why this is not
+    a remote destruction button. Knowing the locator is not enough, and
+    it must never become enough.
+
+    EVERY FAILURE IS SWALLOWED, on purpose. The mail is already
+    decrypted and written to disk; refusing to finish the job because a
+    third machine did not answer would be trading one promise for a
+    worse one. If the notice never arrives, the piece expires by its
+    deadline, which is the safety net underneath all of this and does
+    not go away.
+    """
+    token = hashlib.sha256(
+        ETIQUETA_LECTURA + clave_aes + localizador.hex().encode("ascii")
+    ).hexdigest()
+
+    datos = urllib.parse.urlencode({
+        "id": localizador.hex(),
+        "token": token,
+    }).encode("ascii")
+
+    # https written out by hand, same as everywhere else in this file:
+    # the name came out of a message somebody else wrote, and it has
+    # already gone through dominio_valido() before getting here.
+    peticion = urllib.request.Request(
+        "https://%s/ebody/read" % servidor, data=datos, method="POST",
+        headers={
+            "User-Agent": AGENTE,
+            "Content-Type": "application/x-www-form-urlencoded",
+        })
+
+    try:
+        with urllib.request.urlopen(peticion, timeout=5) as r:
+            r.read()
+        print("Avisado a %s de que este correo ya se ha leido." % servidor)
+    except Exception:
+        # Not even a warning. The reader has nothing to do about this
+        # and it is not their problem: their mail is open.
+        pass
+
+
 def main():
     p = argparse.ArgumentParser(
         description="Junta las dos piezas de un correo puzzle y escribe un .eml",
@@ -441,6 +503,11 @@ def main():
     p.add_argument("--guardar-pieza", action="store_true",
                    help="deja tambien en disco la pieza descargada, por si "
                         "quieres guardarla y no volver a depender del servidor")
+    p.add_argument("--sin-aviso", action="store_true",
+                   help="no avisar al servidor de que has leido el correo. "
+                        "Ese aviso es lo que hace que un mensaje 'se destruye "
+                        "al leerlo' se destruya de verdad; sin el, la pieza "
+                        "vive hasta que cumpla su plazo")
     args = p.parse_args()
 
     # A PIN that is not six digits is a warning and not an exit: it is
@@ -573,6 +640,18 @@ def main():
     salida = args.salida or (args.ehead.rsplit(".", 1)[0] + ".eml")
     with open(salida, "wb") as f:
         f.write(claro)
+
+    # THE READ NOTICE, and it goes exactly here: the tag has verified,
+    # so this is a real, complete read. Never on the download and never
+    # before the tag, because a half transfer or a wrong PIN must not be
+    # able to destroy a message nobody has seen.
+    #
+    # Only when the piece was actually downloaded. When it is handed in
+    # as a file, this program promises not to connect anywhere, and that
+    # promise is worth more than the notice. --sin-aviso exists for
+    # whoever wants to keep it in the other case too.
+    if not args.ebody and not args.sin_aviso:
+        avisar_lectura(donde, localizador, clave_aes)
 
     print("\nCorreo reconstruido: %s  (%d bytes)" % (salida, len(claro)))
     print("Abrelo con Thunderbird, Outlook o el programa de correo que uses.")

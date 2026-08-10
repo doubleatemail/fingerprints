@@ -132,6 +132,14 @@ AGENTE = "dae_send.py/1.0 (+https://doubleat.email)"
 VERSION       = "DAE-5"
 ALGO          = "A256GCM+X25519+AONT+PIN+ORIGIN"
 ETIQUETA_AONT = b"DAE-AONT-v2"
+
+# Etiqueta de dominio de la PRUEBA DE LECTURA (06_AT_AT_PROTOCOL.md
+# 9.bis). Distinta de la de arriba a proposito: los dos resumenes salen
+# de material del mismo mensaje, y sin etiquetas separadas uno podria
+# valer como el otro. El que sobra seria grave, porque quien tuviera el
+# resumen de la mascara podria fabricar el aviso "ya lo he leido" sin
+# haber leido nada.
+ETIQUETA_LECTURA = b"DAE-READ-1"
 MAX_HEAD      = 102400      # 100 KB
 RATIO_HEAD    = 0.10        # 10 %
 
@@ -592,16 +600,36 @@ def sellar(claro, publicas, pin, origen):
         "szPayload":  base64.b64encode(cifrado[:n_head]).decode("ascii"),
     }
 
+    # THE READ PROOF DIGEST. It has to be computed here because this
+    # program is the only one that ever held the message key: the
+    # server that delivers the mail never sees the message nor its key,
+    # so it cannot derive this from anything that reaches it.
+    #
+    # Without it, a message sealed here and marked "destroyed on
+    # reading" would only expire by deadline once someone on another
+    # server reads it. Nobody would be told. See 06_AT_AT_PROTOCOL.md
+    # 9.bis.
+    #
+    # What travels to the server is the DIGEST OF THE TOKEN, never the
+    # token: what gets stored cannot be what gets sent, or the
+    # delivering server's database would be the key to a remote
+    # destruction button.
+    token  = hashlib.sha256(
+        ETIQUETA_LECTURA + clave + body_id.hex().encode("ascii")).hexdigest()
+    prueba = hashlib.sha256(token.encode("ascii")).hexdigest()
+
     return (json.dumps(cabecera, separators=(",", ":")),
             cifrado[n_head:],
-            body_id.hex())
+            body_id.hex(),
+            prueba)
 
 
 # ---------------------------------------------------------------------------
 #  The delivery
 # ---------------------------------------------------------------------------
 
-def entregar(servidor, usuario, contrasena, para, cabecera, cuerpo, body_id, retencion):
+def entregar(servidor, usuario, contrasena, para, cabecera, cuerpo, body_id,
+             retencion, prueba):
     frontera = "----dae" + secrets.token_hex(16)
     partes = []
 
@@ -615,6 +643,11 @@ def entregar(servidor, usuario, contrasena, para, cabecera, cuerpo, body_id, ret
     campo("szBodyId", body_id)
     if retencion:
         campo("szRetention", retencion)
+    # El resumen de la prueba de lectura. Vacio se acepta al otro lado y
+    # significa "este correo no admite aviso de lectura remota": caduca
+    # por plazo y no antes. Aqui siempre va lleno.
+    if prueba:
+        campo("szReadProof", prueba)
 
     partes.append(
         ("--%s\r\nContent-Disposition: form-data; name=\"ebody\"; filename=\"ebody\"\r\n"
@@ -741,7 +774,7 @@ def main():
     origen = args.origen or dominio_de_url(args.servidor)
 
     aviso("Cifrando en este ordenador...")
-    cabecera, cuerpo, body_id = sellar(claro, publicas, pin, origen)
+    cabecera, cuerpo, body_id, prueba = sellar(claro, publicas, pin, origen)
     aviso("  eHead %d bytes,  eBody %d bytes" % (len(cabecera), len(cuerpo)))
 
     # Only said when the PIN is real. Announcing "protegido con PIN"
@@ -765,7 +798,7 @@ def main():
 
     aviso("Entregando las dos piezas...")
     resp = entregar(args.servidor, args.de, contrasena, args.para,
-                    cabecera, cuerpo, body_id, args.retencion)
+                    cabecera, cuerpo, body_id, args.retencion, prueba)
 
     if not resp.get("bOk"):
         sys.exit("No se ha enviado: %s" % resp.get("szError", "motivo desconocido"))
