@@ -68,34 +68,76 @@ Two programs run on your own computer and need none of our JavaScript:
 - `sources/dae_send.py` — encrypts and sends one, with signature and
   attachments.
 
-Both are short enough to read in one sitting. They are public domain:
+Both are short enough to read in one sitting. They are MIT licensed:
 copy them, change them, redistribute them.
 
 If what you are sending is serious, use these.
 
-> **Note on language.** This README and `verify.py` are in English. The
-> comments inside `sources/` are still in Spanish: those files must stay
-> byte-for-byte identical to what the site serves, or the fingerprints
-> stop matching. Translating them changes every hash, so it will be done
-> as one deliberate pass rather than piecemeal.
+> **Note on language.** This README, `verify.py` and the documentation
+> comments inside `sources/` are in English: they are read by exactly the
+> people who do not trust us, and in Spanish they could not audit them.
+> The messages the two tools *print while running* are still in Spanish,
+> because today's users are. Translating those changes every hash, so it
+> will be one deliberate pass rather than piecemeal.
 
 ## The protocol
 
 Puzzle email (`@@`) splits every message into two pieces that do not
-travel together: one goes by mail, the other stays stored. And the
-message key travels masked with the digest of the **entire** ciphertext,
-so you need every last byte of both pieces to recover it. Intercepting
-one piece gets you nothing: it is not that you lack computing power, it
-is that you lack data.
+travel together: one goes by mail, the other stays stored. The message
+key travels masked with the digest of the **entire** ciphertext, so the
+key cannot be recovered from a partial message.
 
-The specification is at <https://doubleat.email/?page=protocol>.
+**Said precisely, because the sloppy version of this claim is false.**
+We used to write that you need "every last byte" to recover anything.
+That reads as though losing one byte protected you, and it does not: if
+only a couple of bytes are missing you can simply try all the values,
+and there are only 65,536 of them. Our own audit did exactly that and
+got the whole message back in under a second.
+
+What protects you is not the mask on its own — it is **how much** is
+missing. The piece that travels by mail carries about a tenth of the
+ciphertext; the other nine tenths never leave the store. Nobody guesses
+nine tenths of a message. The mask is what turns that gap into
+all-or-nothing instead of a partial leak: without the missing bytes you
+do not get a worse copy of the message, you get nothing at all.
+
+So intercepting one piece gets you nothing, and the honest reason is
+worth stating plainly: it is not that you lack computing power, it is
+that you lack most of the data.
+
+**The wire specification is `SPEC.md`, in this repository.** It is
+complete enough to write an implementation from without reading our code,
+which is the only real test of whether a specification is any good. If
+you have to open our source to find out what to do, that is a hole in the
+document and we want to hear about it.
+
+There is also a readable summary at
+<https://doubleat.email/?page=implement>.
 
 ---
 
-MIT licensed. See `LICENSE`.
+## Licences: two, and on purpose
 
-Why not "public domain": Spanish law, where this is written, does not let
-an author renounce copyright by declaration, so a public-domain notice is
-ambiguous at best and void at worst. Anyone who wanted to build on this
-seriously would have their lawyer stop them. MIT says the same thing —
-take it, change it, sell it, no permission needed — and actually holds.
+**The code is MIT.** See `LICENSE`. That covers `sources/` and
+`verify.py`.
+
+**The specification is CC BY 4.0.** See the end of `SPEC.md`.
+
+They are different things and they need different permissions. MIT is a
+software licence — it speaks of "the Software", of copies and substantial
+portions. Applied to a document, it leaves anyone wanting to quote a
+paragraph in a standards draft, a paper, or a rival implementation's
+manual asking their lawyer what it means. CC BY is the licence written
+for documents and it is what everyone uses for standards. A specification
+nobody can quote without hesitating is not a specification: it is the
+documentation of one product.
+
+Neither grants patent rights. MIT has no patent grant; if that ever
+matters, Apache 2.0 does.
+
+Why not "public domain", which is what this repository used to say:
+Spanish law, where this is written, does not let an author renounce
+copyright by declaration, so a public-domain notice is ambiguous at best
+and void at worst. Anyone who wanted to build on this seriously would
+have their lawyer stop them. MIT and CC BY say the same thing — take it,
+change it, sell it, no permission needed — and actually hold.

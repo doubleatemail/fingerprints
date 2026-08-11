@@ -3,7 +3,7 @@
 """
 verify.py - Compare what doubleat.email serves against this repository
 
-Public domain. Standard library only.
+MIT licensed, see LICENSE. Standard library only.
 
 ------------------------------------------------------
 WHAT THIS IS FOR
