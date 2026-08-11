@@ -62,9 +62,24 @@
     }
 
     function escapar(sz) {
-        var el = document.createElement('div');
-        el.textContent = sz;
-        return el.innerHTML;
+        // textContent -> innerHTML escapa &, < y >, pero NO la comilla.
+        // Aqui el resultado se mete dentro de atributos entrecomillados
+        // (alt="...", download="..."), y el dato es el nombre de un
+        // adjunto, que lo escribe quien envia el correo: una comilla
+        // cierra el atributo y deja meter onload= en la etiqueta que el
+        // propio codigo ya emite. Sin un solo clic, y en la pantalla
+        // donde esta cargada la llave privada.
+        //
+        // Se escapan las dos comillas a mano. demo.js resuelve lo mismo
+        // construyendo los nodos con createElement y textContent, que es
+        // mejor porque no hay nada que recordar escapar; esto es el
+        // arreglo minimo mientras esta pantalla siga armando HTML.
+        return String(sz)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     function pintar(objMsg) {
